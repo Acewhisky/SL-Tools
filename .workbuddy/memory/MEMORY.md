@@ -5,6 +5,14 @@
 - 启动：`start.bat`（自动建 venv 装依赖）；开发测试：`python tests/integration_test.py`
 - 当前版本：v2.0beta（backend/version.py 单一来源）
 
+## 版本管理 (Git / GitHub)
+- GitHub 仓库：`https://github.com/Acewhisky/SL-Tools.git`（**注意仓库名是大写 `SL-Tools`**，非 sl-tools）；私有，默认分支 `main`。
+- 本仓库仅跟踪**源码**（30 个文件）：Python 后端 / 静态前端 / tests / tools / 配置 / README / .gitignore / `.workbuddy/memory/MEMORY.md`。
+- `.gitignore` 已正确排除运行时数据：`data/`（备份）、`dist/`、`*.exe`、`debug.log`、`__pycache__/`、每日记忆日志（`.workbuddy/memory/2026-08-*.md`）。
+- 工作流：trunk-based，从 `main` 拉 `feat/xxx` 短分支开发，conventional commits，合并后 push `main`。
+- ⚠️ 沙箱环境无 GitHub 凭证，`git fetch`/`git push` 在此会失败（could not read Username）；本机有登录态可正常操作。
+- WorkBuddy 的 GitHub 连接器(`github_*`)**无建仓权限**(403 Resource not accessible by integration)，只能读写已有仓库内容；二进制文件走连接器 API 会被二次 base64 损坏，需用真 `git push`。
+
 ## 项目约定
 - 用户「十六」已确认的技术决策：Python Flask / 浏览器本地访问 / 内置精选规则+手动添加 / 先做完整备份（增量后续迭代）
 - 备份结构：data/backups/<游戏id>/<时间戳>/{manifest.json, meta.json, data/}；时间戳格式 %Y%m%d_%H%M%S，同秒冲突加 _N 后缀
