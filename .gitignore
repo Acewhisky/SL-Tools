@@ -1,0 +1,35 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 构建产物 =====
+dist/
+build/
+*.exe
+# 注：savemgr.spec 是构建脚本，保留
+
+# ===== 日志 =====
+*.log
+debug.log
+
+# ===== 工具运行时数据（切勿入库）=====
+data/backups/
+data/ludusavi/
+data/log.txt
+data/settings.json
+data/games.json
+data/.initialized
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ===== WorkBuddy 内部（保留 MEMORY.md，忽略其余）=====
+.workbuddy/*
+!.workbuddy/memory/
+.workbuddy/memory/*
+!.workbuddy/memory/MEMORY.md

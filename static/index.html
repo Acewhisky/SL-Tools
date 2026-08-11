@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>游戏存档管理工具</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">🎮</div>
+      <div>
+        <h1>游戏存档管理</h1>
+        <span class="brand-sub">一键备份 · 一键恢复 · 版本管理</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-scan" class="btn btn-primary">
+        <span class="btn-ico">🔍</span>扫描游戏
+      </button>
+      <button id="btn-backup-all" class="btn btn-success">
+        <span class="btn-ico">💾</span>备份全部
+      </button>
+      <button id="btn-export" class="btn btn-ghost" title="导出配置">
+        <span class="btn-ico">📤</span>导出
+      </button>
+      <button id="btn-import" class="btn btn-ghost" title="导入配置">
+        <span class="btn-ico">📥</span>导入
+      </button>
+      <button id="btn-settings" class="btn btn-ghost" title="设置">
+        <span class="btn-ico">⚙️</span>设置
+      </button>
+      <button id="btn-logs" class="btn btn-ghost" title="日志">
+        <span class="btn-ico">📋</span>日志
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 左侧游戏列表 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <input id="game-search" type="text" placeholder="搜索游戏…" autocomplete="off">
+        <div class="platform-filter" id="platform-filter">
+          <button data-pf="" class="pf-chip active">全部</button>
+          <button data-pf="Steam" class="pf-chip">Steam</button>
+          <button data-pf="Epic" class="pf-chip">Epic</button>
+          <button data-pf="GOG" class="pf-chip">GOG</button>
+          <button data-pf="Xbox" class="pf-chip">Xbox</button>
+          <button data-pf="Other" class="pf-chip">其他</button>
+        </div>
+      </div>
+      <div id="game-list" class="game-list"></div>
+      <div class="sidebar-foot">
+        <button id="btn-add-game" class="btn btn-block btn-outline">＋ 手动添加游戏</button>
+      </div>
+    </aside>
+
+    <!-- 右侧主区域 -->
+    <main class="main">
+      <!-- 空状态 -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">🎮</div>
+        <h2>选择一款游戏</h2>
+        <p>点击左侧游戏，查看存档路径与备份版本，或点击「扫描游戏」自动识别本机已安装的游戏。</p>
+        <div class="empty-actions">
+          <button id="btn-scan-empty" class="btn btn-primary">🔍 扫描本机游戏</button>
+        </div>
+      </div>
+
+      <!-- 游戏详情 -->
+      <div id="game-detail" class="game-detail hidden">
+        <!-- 详情头 -->
+        <div class="detail-head">
+          <div class="detail-title">
+            <h2 id="g-name">—</h2>
+            <div class="g-meta">
+              <span id="g-platform" class="tag"></span>
+              <span id="g-detected" class="tag tag-ok">已检测到存档</span>
+              <label class="tag tag-toggle" title="启用后：存档文件变化时自动备份（需在设置中开启全局监听）">
+                <input type="checkbox" id="g-auto" style="vertical-align:-2px"> 自动备份
+              </label>
+              <span id="g-count" class="tag tag-count">0 个备份</span>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button id="btn-backup-now" class="btn btn-success btn-lg">
+              <span class="btn-ico">💾</span>立即备份
+            </button>
+            <button id="btn-restore" class="btn btn-primary btn-lg">
+              <span class="btn-ico">↩️</span>一键恢复
+            </button>
+            <button id="btn-verify-all" class="btn btn-ghost" title="校验全部版本">✅ 校验</button>
+            <button id="btn-cleanup" class="btn btn-danger-ghost" title="清理过期备份（保留最近N个）">🧹 清理</button>
+          </div>
+        </div>
+
+        <!-- 路径信息卡片 -->
+        <div class="cards">
+          <div class="card path-card">
+            <div class="card-title">📁 存档路径（来源）</div>
+            <div id="g-paths" class="path-list"></div>
+            <div class="card-actions">
+              <button id="btn-edit-paths" class="btn btn-link btn-sm">编辑路径</button>
+              <button id="btn-open-source" class="btn btn-outline btn-sm">📂 在文件管理器中打开</button>
+            </div>
+          </div>
+          <div class="card path-card">
+            <div class="card-title">🗂 备份目录（目标）</div>
+            <div id="g-backup-dir" class="path-dir"></div>
+            <div class="card-actions">
+              <button id="btn-open-backup" class="btn btn-outline btn-sm">📂 在文件管理器中打开</button>
+            </div>
+            <div class="card-note">可在「设置」中修改备份根目录</div>
+          </div>
+        </div>
+
+        <!-- 时间线 -->
+        <div class="timeline-section">
+          <div class="section-head">
+            <h3>备份历史（时间线）</h3>
+            <span id="g-keep-info" class="card-note"></span>
+          </div>
+          <div id="timeline" class="timeline"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 底部状态栏 -->
+  <footer class="statusbar">
+    <span id="status-text">就绪</span>
+    <span class="status-version" id="status-version" title="存档管理工具">v…</span>
+    <span id="status-side" class="status-side"></span>
+  </footer>
+</div>
+
+<!-- 通用弹窗 -->
+<div id="modal-mask" class="modal-mask hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">提示</h3>
+      <button class="modal-close" data-close>✕</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
