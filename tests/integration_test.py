@@ -182,7 +182,10 @@ check("取消收藏后 ts2 被清理", not any(v["timestamp"] == ts2 for v in ve
 print("\n步骤 11: 游戏运行检测（防呆）")
 # 使用当前最新存在的版本做恢复测试
 latest_ts = versions[0]["timestamp"] if versions else ts3
-r = req("PUT", f"/api/games/{gid}", {"processes": ["python.exe"]})
+# 平台适配：Linux 上进程名是 python / python3，Windows 是 python.exe
+import sys as _sys
+proc_name = "python.exe" if _sys.platform == "win32" else "python"
+r = req("PUT", f"/api/games/{gid}", {"processes": [proc_name]})
 r = req("POST", f"/api/games/{gid}/restore", {"timestamp": latest_ts})
 check("运行中拒绝恢复", not r.get("ok"), r)
 print(f"  错误信息: {r.get('error')}")
@@ -190,12 +193,16 @@ print(f"  错误信息: {r.get('error')}")
 req("PUT", f"/api/games/{gid}", {"processes": []})
 
 print("\n步骤 12: 压缩备份 (zip)")
-settings = req("GET", "/api/settings")["data"]
-settings["compress_format"] = "zip"
-req("POST", "/api/settings", settings)
+# 只传 compress_format（白名单保存，避免整对象回传含派生字段）
+req("POST", "/api/settings", {"compress_format": "zip"})
 r = req("POST", f"/api/games/{gid}/backup", {"note": "zip压缩备份", "force": True})
+print(f"  zip 备份响应: {str(r)[:200]}")
 check("zip 备份成功", r.get("ok"), r)
-check("zip 备份标记压缩", r.get("data", {}).get("compress") == "zip", r)
+if r.get("data") is None:
+    print(f"  ⚠️ zip 备份 data 为 None，完整响应: {str(r)[:300]}")
+    check("zip 备份标记压缩", False, f"data=None, resp={str(r)[:200]}")
+else:
+    check("zip 备份标记压缩", r.get("data", {}).get("compress") == "zip", r)
 ts_zip = r["data"]["timestamp"]
 # 校验 zip 版本
 r = req("POST", f"/api/games/{gid}/versions/{ts_zip}/verify")

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, Dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check (Python)
+        run: |
+          python -m py_compile app.py backend/*.py tests/*.py
+          echo "PY syntax OK"
+
+      - name: Start service
+        run: |
+          # CI 干净环境：禁止自动打开浏览器（headless 无桌面）
+          SAVEMGR_PORT=8877 python app.py > /tmp/app.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:8877/api/version > /dev/null 2>&1; then
+              echo "service ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -s http://127.0.0.1:8877/api/version
+          echo ""
+
+      - name: Run integration tests
+        if: always()
+        env:
+          SAVEMGR_TEST_PORT: "8877"
+          SAVEMGR_TEST_ROOT: ${{ github.workspace }}
+        run: python tests/integration_test.py
+
+      - name: Run blackbox QA suite
+        if: always()
+        env:
+          SAVEMGR_TEST_PORT: "8877"
+          SAVEMGR_TEST_ROOT: ${{ github.workspace }}
+        run: python tests/qa_blackbox.py
+
+      - name: Run incremental regression (unit-level, no service)
+        if: always()
+        env:
+          SAVEMGR_TEST_ROOT: ${{ github.workspace }}
+        run: python tests/qa_regression_incr.py
+
+      - name: Show service log (always, for debugging)
+        if: always()
+        run: tail -60 /tmp/app.log

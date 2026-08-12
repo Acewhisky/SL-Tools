@@ -574,12 +574,21 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
         _invalidate_versions(game_id)  # 新备份后缓存失效
 
         try:
-            cleanup_versions(game_id, keep=store.settings.get("keep_versions", 5))
+            # 排除刚创建的版本：同秒快速连续备份时，cleanup 可能按字符串排序
+            # 把复用的基础时间戳目录（如 181536）误判为最旧而删除（CI 高速环境必现）
+            cleanup_versions(game_id, keep=store.settings.get("keep_versions", 5),
+                             exclude=ts)
         except Exception as e:
             log.warning("清理旧版本失败: %s", e)
 
         log.info("备份完成 [%s] %s kind=%s -> %s", game_id, game.get("name"), kind, ts)
-        return load_version(game_id, ts)
+        v = load_version(game_id, ts)
+        if v is None:
+            vdir = version_dir(game_id, ts)
+            log.error("备份后 load_version 返回 None [%s] ts=%s vdir=%s exists=%s items=%s",
+                      game_id, ts, vdir, vdir.exists(),
+                      [p.name for p in vdir.iterdir()] if vdir.exists() else "N/A")
+        return v
 
 
 # ---------------- 元信息读取 ----------------
@@ -640,8 +649,13 @@ def list_versions(game_id: str) -> list:
         if child.is_dir() and (child / META_NAME).exists():
             v = load_version(game_id, child.name)
             if v:
+                # 记录目录 mtime（纳秒）：排序基准。字符串倒序在同秒复用目录名
+                # （cleanup 删基础名后新备份复用，如 181536 重建）时会误判新旧
+                v["_mtime_ns"] = child.stat().st_mtime_ns
                 versions.append(v)
-    versions.sort(key=lambda x: x["timestamp"], reverse=True)
+    versions.sort(key=lambda x: (x["_mtime_ns"], x["timestamp"]), reverse=True)
+    for v in versions:
+        v.pop("_mtime_ns", None)
     _versions_cache[game_id] = (now + _VERSIONS_TTL, versions)
     return versions
 
@@ -750,17 +764,21 @@ def delete_version(game_id: str, ts: str, force: bool = False) -> bool:
     return True
 
 
-def cleanup_versions(game_id: str, keep: int = None) -> dict:
+def cleanup_versions(game_id: str, keep: int = None, exclude: str = None) -> dict:
     """清理过期版本：保留最近 keep 个非收藏 + 全部收藏。
 
     删除时按从旧到新顺序，逐个处理链完整性：被后代引用时先提升后代为 full。
+    exclude：不删除的版本时间戳（备份后清理时传刚创建的 ts，防止同秒复用目录被误删）。
     """
     if keep is None:
         keep = store.settings.get("keep_versions", 5)
     versions = list_versions(game_id)
     favorites = [v for v in versions if v.get("favorite")]
     kept = [v for v in versions if not v.get("favorite")]
+    # 计算待删：保留最近 keep 个非收藏（exclude 不占名额，仅防止被误删）
     to_delete = kept[keep:] if keep is not None else []
+    if exclude:
+        to_delete = [v for v in to_delete if v["timestamp"] != exclude]
     deleted = []
     # 从最旧开始删，确保链处理顺序正确
     for v in sorted(to_delete, key=lambda x: x["timestamp"]):
