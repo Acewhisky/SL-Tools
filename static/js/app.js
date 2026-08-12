@@ -279,7 +279,7 @@ function renderTimeline() {
     const favCls = v.favorite ? "tl-fav" : "";
     const errCls = v.status === "异常" ? "tl-err" : "";
     const badgeFav = v.favorite
-      ? `<span class="tl-badge fav">★ 已收藏</span>`
+      ? `<span class="tl-badge fav" data-ts="${esc(v.timestamp)}" title="点击取消收藏">★ 已收藏</span>`
       : `<span class="tl-badge fav-star" data-act="fav" data-ts="${esc(v.timestamp)}" title="收藏此版本，不会被自动清理">☆ 收藏</span>`;
     const badgeVer = v.verified
       ? `<span class="tl-badge ok">✅ 已校验</span>`
