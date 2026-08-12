@@ -163,16 +163,20 @@ class BackupUnchanged(Exception):
     """存档无变更，无需备份。"""
 
 
-def check_changes(game: dict) -> dict:
+def check_changes(game: dict, full_files: dict = None, dirs_info: dict = None,
+                  existing: list = None) -> dict:
     """检测存档自最近一次备份以来是否有变化。
 
+    可传入 _compute_current_state 的预计算结果（full_files 等），
+    避免与调用方重复全量 SHA256 计算（大存档性能关键）。
     返回: {"changed": bool, "latest": 最近版本时间戳 or None, "reason": 说明}
     """
     game_id = game["id"]
-    try:
-        full_files, _dirs, _existing = _compute_current_state(game)
-    except Exception as e:
-        return {"changed": False, "latest": None, "reason": f"读取存档失败: {e}"}
+    if full_files is None:
+        try:
+            full_files, dirs_info, existing = _compute_current_state(game)
+        except Exception as e:
+            return {"changed": False, "latest": None, "reason": f"读取存档失败: {e}"}
     if not full_files:
         return {"changed": False, "latest": None, "reason": "存档目录不存在"}
     versions = list_versions(game_id)
@@ -446,9 +450,11 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
         if not full_files:
             raise BackupError("存档目录不存在，无法备份")
 
-        # 无变更检测：非强制时，若与最近备份一致则跳过
+        # 无变更检测：非强制时，若与最近备份一致则跳过。
+        # 复用已计算的 full_files，避免对同一存档重复全量 SHA256（Q1 修复）
         if not force:
-            chk = check_changes(game)
+            chk = check_changes(game, full_files=full_files,
+                                dirs_info=dirs_info, existing=existing)
             if not chk["changed"]:
                 log.info("存档无变更，跳过备份 [%s] %s", game_id, game.get("name"))
                 raise BackupUnchanged(chk["reason"])

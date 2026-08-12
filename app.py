@@ -318,16 +318,18 @@ def backup_game(game_id):
     data = request.get_json(force=True, silent=True) or {}
     force = bool(data.get("force", False))
     try:
-        # 无变更且非强制时，返回 unchanged 标记让前端弹窗确认
-        if not force:
-            chk = bk.check_changes(g)
-            if not chk["changed"]:
-                return _api_ok({"unchanged": True, "reason": chk["reason"],
-                                "latest": chk["latest"], "game_id": game_id})
+        # create_backup 内部已做无变更检测（check_changes），这里不再重复预检，
+        # 避免同一请求对存档做两次全量 SHA256（大存档耗时翻倍）
         v = bk.create_backup(g, note=data.get("note", ""), mode=data.get("mode"), force=force)
         return _api_ok(v)
     except bk.BackupUnchanged as e:
-        return _api_ok({"unchanged": True, "reason": str(e), "game_id": game_id})
+        # 补充 latest：供前端"无变更确认"弹窗展示最近备份时间
+        latest = ""
+        _vs = bk.list_versions(game_id)
+        if _vs:
+            latest = _vs[0]["timestamp"]
+        return _api_ok({"unchanged": True, "reason": str(e),
+                        "latest": latest, "game_id": game_id})
     except bk.BackupError as e:
         return _api_err(str(e))
     except Exception as e:
@@ -495,9 +497,22 @@ def import_config():
             store.upsert_game(g)
             imported += 1
     if isinstance(data.get("settings"), dict):
-        for k in ("backup_root", "keep_versions", "compress_format", "watch_delay"):
-            if k in data["settings"]:
-                store.settings[k] = data["settings"][k]
+        # 类型校验（S2 修复）：只接受合法类型的值，脏配置直接丢弃
+        src = data["settings"]
+        if isinstance(src.get("backup_root"), str) and src["backup_root"].strip():
+            store.settings["backup_root"] = src["backup_root"].strip()
+        try:
+            if isinstance(src.get("keep_versions"), int):
+                store.settings["keep_versions"] = max(1, min(src["keep_versions"], 99))
+        except Exception:
+            pass
+        if isinstance(src.get("compress_format"), str) and src["compress_format"] in ("none", "zip", "tar.gz"):
+            store.settings["compress_format"] = src["compress_format"]
+        try:
+            if isinstance(src.get("watch_delay"), (int, float)):
+                store.settings["watch_delay"] = max(1, min(float(src["watch_delay"]), 120))
+        except Exception:
+            pass
         store.save_settings()
     automation.sync_watchers()
     return _api_ok({"imported_games": imported, "total": len(store.games)})

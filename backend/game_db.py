@@ -796,7 +796,7 @@ STEAM_APPIDS = {
     "赛博朋克2077 (Cyberpunk 2077)": 1091500,
     "哈迪斯2 (Hades II)": 1145350,
     "天国拯救2 (Kingdom Come: Deliverance II)": 1771300,
-    "神之天平 (ASTLIBRA)": 1716740,
+    "神之天平 (ASTLIBRA)": 1718570,
     "战锤40K：暗潮 (Darktide)": 1361210,
     "战锤：末世鼠疫2 (Vermintide 2)": 552500,
     "八方旅人2 (Octopath Traveler II)": 1971650,

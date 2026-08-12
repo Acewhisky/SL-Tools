@@ -55,16 +55,14 @@ def backup_all(force: bool = False, note: str = "", mode: str = None) -> dict:
             continue  # 隐藏的游戏不参与批量备份
         item = {"id": g.get("id"), "name": g.get("name", ""), "status": "skipped", "timestamp": None}
         try:
-            if not force:
-                chk = bk.check_changes(g)
-                if not chk["changed"]:
-                    item["status"] = "skipped"
-                    item["reason"] = chk["reason"]
-                    results.append(item)
-                    continue
+            # create_backup 内部已做无变更检测（BackupUnchanged -> skipped），
+            # 不再重复预检（Q1 修复：避免大存档双重全量 SHA256）
             v = bk.create_backup(g, note=note, mode=mode, force=force)
             item["status"] = "ok"
             item["timestamp"] = v["timestamp"]
+        except bk.BackupUnchanged as e:
+            item["status"] = "skipped"
+            item["reason"] = str(e)
         except bk.BackupError as e:
             item["status"] = "error"
             item["reason"] = str(e)
