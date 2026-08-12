@@ -341,6 +341,9 @@ def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dic
     game_id = game["id"]
     # base_version 使用上一版本"目录名"（prev_meta["base_dir"] 优先，兼容旧数据）
     base_ts = prev_meta.get("base_dir") or prev_meta.get("timestamp")
+    if not base_ts:
+        # 防御：无基线不允许创建增量（增量链必须最终回溯到某个 full）
+        raise BackupError("增量备份缺少基线版本（无历史版本时请先做 full 备份）")
     vdir = version_dir(game_id, ts)
     changes_dir = vdir / CHANGES_DIR_NAME
     changes_dir.mkdir(parents=True, exist_ok=True)
@@ -407,14 +410,18 @@ def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dic
 
 def _decide_backup_kind(game: dict, mode: str, prev_meta: dict, prev_manifest: dict,
                        full_files: dict, existing: list) -> str:
-    """决定本次备份类型（full / incr）。"""
+    """决定本次备份类型（full / incr）。
+
+    无历史版本（prev 缺失）时强制 full：增量必须有基线，否则首个备份会被
+    创建为 base_version=None 的孤儿增量，导致备份满后清理/恢复失败（缺陷修复）。
+    """
+    if not prev_manifest or not prev_meta:
+        return KIND_FULL
     if mode == "full":
         return KIND_FULL
     if mode == "incr":
         return KIND_INCR
     # auto：基于变更文件大小比例 + 文件数比例综合判断（变更小→增量；变更大→完整重置链）
-    if not prev_manifest or not prev_meta:
-        return KIND_FULL
     prev_files = prev_manifest.get("files", {})
     changed_size = 0
     total_prev_size = max(1, meta_size_of_files(prev_files))
@@ -809,6 +816,8 @@ def _apply_deletions(deleted: list, dest: Path):
 def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
     """重建指定版本到 dest 目录（沿 base_version 链回溯到 full，再依次应用 incr）。
 
+    兼容历史缺陷产生的"孤儿增量根"：首个备份即 incr 且 base_version=None，
+    此时其 changes/ 为全量（创建时 prev 清单为空），可安全作为链根。
     返回 dest 路径。用于恢复和校验。
     """
     dest = Path(dest)
@@ -833,13 +842,25 @@ def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
             break
         base = meta.get("base_version")
         if not base or not version_dir(game_id, base).exists():
-            # base 缺失（理论上不会，因清理时已提升）
+            # 孤儿增量根：incr 但无基线目录（历史缺陷：首个备份即 incr）。
+            # 若其 changes 为全量（changes 键 == files 键），可安全作为链根。
+            mf = _read_json(vdir / MANIFEST_NAME, {})
+            if set(mf.get("changes", {}).keys()) == set(mf.get("files", {}).keys()):
+                log.warning("孤儿增量根 %s 作为链根处理（changes 为全量）", cur_ts)
+                break
             raise BackupError(f"增量基线 {base} 缺失，无法重建")
         cur_ts = base
 
-    # chain 顺序：[ts, ..., full]，先处理 full
-    full_ts = chain[-1]
-    _materialize_full(game_id, full_ts, dest)
+    # chain 顺序：[ts, ..., 根]；根是 full 或"全量孤儿增量"
+    root_ts = chain[-1]
+    root_vdir = version_dir(game_id, root_ts)
+    root_meta = _read_json(root_vdir / META_NAME, {})
+    if root_meta.get("kind") == KIND_FULL:
+        _materialize_full(game_id, root_ts, dest)
+    else:
+        # 孤儿增量根：changes/ 为全量内容，直接作为根展开
+        _merge_copy(root_vdir / CHANGES_DIR_NAME, dest)
+        _apply_deletions(_read_json(root_vdir / DELETED_NAME, []), dest)
     # 反向回溯到 ts（中间每个 incr 应用 changes + deleted）
     for incr_ts in reversed(chain[:-1]):
         vdir = version_dir(game_id, incr_ts)
