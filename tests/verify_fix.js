@@ -1,5 +1,6 @@
 // 最小复现：验证 DEFECT-UI-001 修复
-const puppeteer = require("C:/Users/Dengz/.workbuddy/binaries/node/workspace/node_modules/puppeteer-core");
+// 可移植：puppeteer-core 通过 NODE_PATH 或 PUPPETEER_PATH 环境变量指定
+const puppeteer = require(process.env.PUPPETEER_PATH || "puppeteer-core");
 const fs = require("fs");
 const path = require("path");
 const BASE = "http://127.0.0.1:8890";

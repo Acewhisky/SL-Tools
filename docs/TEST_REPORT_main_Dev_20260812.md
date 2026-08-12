@@ -113,7 +113,7 @@
 | `tests/qa_frontend.js` | 前端 UI 全流程（puppeteer，20 断言） |
 | `tests/qa_data_backup/` | 测试前的 settings/games 备份（已恢复） |
 
-> 注：因沙箱 git 钩子问题，脚本未能按原计划提交到 bug/qa-fullflow 分支（commit 对象 aa2fa71 已创建但 refs 被外部进程清除）；源码已完整保存在 `C:\Users\Dengz\AppData\Local\Temp\qa_scripts\`，可由十六本机入库。
+> 注：因沙箱 git 钩子问题，脚本未能按原计划提交到 bug/qa-fullflow 分支（commit 对象 aa2fa71 已创建但 refs 被外部进程清除）；源码已完整保存在 `<临时目录>/qa_scripts/`，可由用户本机入库。
 
 ---
 
@@ -128,13 +128,13 @@
 
 ---
 
-## 7. 遗留事项（需十六本机处理）
+## 7. 遗留事项（需用户本机处理）
 
 1. **git 仓库 .git 完整性**：测试前 GH Desktop/沙箱钩子导致 .git 的 refs 目录、pack、index 被外部进程反复改写，当前 `git status` 报 "bad tree object HEAD"（main HEAD commit 06c99bb 的 tree 对象损坏）。**源码工作区完好**（v2.0.1 全文件），但仓库历史需要修复：
    - 建议：本机（非沙箱）执行 `git fsck --full` 评估损坏范围；若 tree 对象不可恢复，用 `git reflog`/远端 `git fetch` 重新拉取，或将工作区源码 `git init` 重建后与远端对齐。
    - ⚠️ 测试期间创建过 `bug/qa-fullflow` 分支（基于 Dev v2.1.0，含测试脚本 commit aa2fa71），refs 被清后分支引用丢失，commit 对象也可能不完整——**未推送过，无远端影响**。
-2. **Dev 分支源码恢复**：由于 Dev 分支 commit 对象丢失，本次 Dev 测试基于**按 diff 重建的源码**（`C:\Users\Dengz\AppData\Local\Temp\qa_dev_src`，v2.1.0，重建标记 Q2/Q3/Q5/P1/P2/P3 已校验）。建议用户本机 `git checkout Dev` 用远端恢复后，跑一遍 `qa_perf.py` 复核。
-3. **测试脚本入库**：由用户决定分支（bug 分支或 Dev），脚本在 `C:\Users\Dengz\AppData\Local\Temp\qa_scripts\`。
+2. **Dev 分支源码恢复**：由于 Dev 分支 commit 对象丢失，本次 Dev 测试基于**按 diff 重建的源码**（`<临时目录>/qa_dev_src`，v2.1.0，重建标记 Q2/Q3/Q5/P1/P2/P3 已校验）。建议用户本机 `git checkout Dev` 用远端恢复后，跑一遍 `qa_perf.py` 复核。
+3. **测试脚本入库**：由用户决定分支（bug 分支或 Dev），脚本在 `<临时目录>/qa_scripts/`。
 
 ---
 

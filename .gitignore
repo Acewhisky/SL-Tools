@@ -28,8 +28,5 @@ data/.initialized
 .DS_Store
 Thumbs.db
 
-# ===== WorkBuddy 内部（保留 MEMORY.md，忽略其余）=====
-.workbuddy/*
-!.workbuddy/memory/
-.workbuddy/memory/*
-!.workbuddy/memory/MEMORY.md
+# ===== WorkBuddy 内部（全部忽略，不随仓库公开）=====
+.workbuddy/

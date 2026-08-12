@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else
-                    r"C:\Users\Dengz\WorkBuddy\存档管理工具")
+                    str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import backup as bk

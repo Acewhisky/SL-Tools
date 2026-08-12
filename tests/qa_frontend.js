@@ -1,6 +1,7 @@
 // 全流程前端 UI 测试（QA 专用）：覆盖用例文档 C/H/I/M 模块的 UI 交互。
 // 复用 e2e_user_flow.js 模式：Edge headless + puppeteer-core，所有等待带超时。
-const puppeteer = require("C:/Users/Dengz/.workbuddy/binaries/node/workspace/node_modules/puppeteer-core");
+// 可移植：puppeteer-core 通过 NODE_PATH 或 PUPPETEER_PATH 环境变量指定
+const puppeteer = require(process.env.PUPPETEER_PATH || "puppeteer-core");
 const fs = require("fs");
 const path = require("path");
 
