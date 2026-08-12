@@ -5,7 +5,6 @@ import re
 import time
 import hashlib
 import logging
-import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -43,24 +42,41 @@ def expand_env_path(raw: str) -> Path:
     return p
 
 
-def is_game_running(processes) -> bool:
-    """检测指定进程名（如 eldenring.exe）是否在运行。"""
-    import psutil
+# 进程名集合缓存（P2 优化）：psutil 全量遍历成本高，1 秒 TTL 内复用
+_running_procs_cache = {"ts": 0.0, "names": set()}
+_RUNNING_PROCS_TTL = 1.0
 
-    names = {p.lower() for p in (processes or []) if p}
-    if not names:
-        return False
+
+def _running_process_names() -> set:
+    """获取当前所有运行进程名（小写集合），带 1s TTL 缓存。"""
+    import time as _time
+    now = _time.time()
+    if now - _running_procs_cache["ts"] < _RUNNING_PROCS_TTL:
+        return _running_procs_cache["names"]
+    import psutil
+    names = set()
     try:
         for proc in psutil.process_iter(["name"]):
             try:
                 name = proc.info.get("name") or ""
-                if name.lower() in names:
-                    return True
+                if name:
+                    names.add(name.lower())
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except Exception:
+        pass
+    _running_procs_cache["ts"] = now
+    _running_procs_cache["names"] = names
+    return names
+
+
+def is_game_running(processes) -> bool:
+    """检测指定进程名（如 eldenring.exe）是否在运行。"""
+    names = {p.lower() for p in (processes or []) if p}
+    if not names:
         return False
-    return False
+    running = _running_process_names()
+    return bool(names & running)
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:

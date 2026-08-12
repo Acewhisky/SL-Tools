@@ -22,7 +22,6 @@
 恢复 / 校验流程统一为「沿 base_version 链回溯到 full，复原后依次应用每个 incr 的 changes/deleted」，
 由 reconstruct() 完成；清理版本时若被后代引用，会先提升首个后代为 full 以保持链完整。
 """
-import json
 import os
 import shutil
 import time
@@ -35,7 +34,7 @@ from pathlib import Path
 
 from .config import store
 from .utils import (log, is_game_running, sha256_file, dir_size, ts_now, ts_display,
-                    safe_name, fmt_size, expand_env_path, is_subpath, read_json, write_json)
+                    safe_name, expand_env_path, is_subpath, read_json, write_json)
 
 # 兼容别名（保留 _read_json/_write_json 旧调用名，统一走 utils 实现）
 _read_json = read_json
@@ -187,9 +186,62 @@ def check_changes(game: dict, full_files: dict = None, dirs_info: dict = None,
     prev_files = prev_manifest.get("files", {})
     if prev_files == full_files:
         return {"changed": False, "latest": latest["timestamp"], "reason": "存档无变更"}
-    changed = len(full_files) - len(prev_files)
-    changed = max(changed, 1)
-    return {"changed": True, "latest": latest["timestamp"], "reason": f"{changed} 个文件有变化"}
+    # Q3 优化：按哈希差异实际统计变更/删除文件数（而非数量差值，避免"改1删1"误报为0）
+    changed = sum(1 for rel, h in full_files.items() if prev_files.get(rel) != h)
+    deleted = sum(1 for rel in prev_files if rel not in full_files)
+    if not changed and not deleted:
+        return {"changed": False, "latest": latest["timestamp"], "reason": "存档无变更"}
+    parts = []
+    if changed:
+        parts.append(f"{changed} 个文件变更")
+    if deleted:
+        parts.append(f"{deleted} 个文件删除")
+    return {"changed": True, "latest": latest["timestamp"], "reason": "，".join(parts)}
+
+
+def _collect_stat_snapshot(game: dict) -> dict:
+    """Q2 优化：仅采集文件 (大小, mtime) 快照，不读内容。
+
+    用于 check_changes 快速路径：两次快照完全一致 → 必然无内容变化，
+    可跳过全量 SHA256（大存档只 stat 不读盘，性能提升显著）。
+    返回: {相对路径: (size, mtime)}，路径前缀规则与 _compute_current_state 一致。
+    """
+    snapshot = {}
+    for p in game.get("save_paths", []):
+        if not p:
+            continue
+        ep = expand_env_path(p)
+        if not ep.exists():
+            continue
+        key = safe_name(ep.name)
+        if ep.is_dir():
+            for root, _dirs, files in os.walk(ep):
+                for name in files:
+                    full = Path(root) / name
+                    try:
+                        st = full.stat()
+                    except OSError:
+                        continue
+                    rel = _relative(full, ep)
+                    snapshot[f"{key}/{rel}"] = (st.st_size, st.st_mtime)
+        else:
+            try:
+                st = ep.stat()
+            except OSError:
+                continue
+            snapshot[key] = (st.st_size, st.st_mtime)
+    return snapshot
+
+
+def _snapshot_matches(snapshot: dict, manifest: dict) -> bool:
+    """快照与上次备份 manifest 中记录的 stat 快照是否一致。
+
+    manifest 旧数据无 _stat 字段时返回 False（走全量哈希兜底）。
+    """
+    prev = manifest.get("_stat")
+    if not prev:
+        return False
+    return prev == snapshot
 
 
 def _compute_current_state(game: dict) -> tuple:
@@ -273,6 +325,7 @@ def _create_full_backup(game: dict, ts: str, full_files: dict, dirs_info: dict, 
 
     manifest = {"kind": KIND_FULL, "files": full_files, "dirs": dirs_info,
                 "changes": {}, "deleted": []}
+    manifest["_stat"] = _collect_stat_snapshot(game)  # Q2: 记录 stat 快照供下次快速比对
     _write_json(vdir / MANIFEST_NAME, manifest)
     _write_json(vdir / META_NAME, meta)
     return meta
@@ -348,6 +401,7 @@ def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dic
         "deleted": sorted(deleted),
         "dirs": dirs_info,
     }
+    manifest["_stat"] = _collect_stat_snapshot(game)  # Q2: 记录 stat 快照供下次快速比对
     _write_json(vdir / MANIFEST_NAME, manifest)
     _write_json(vdir / META_NAME, meta)
     _write_json(vdir / DELETED_NAME, sorted(deleted))
@@ -452,6 +506,25 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
                 "请到「设置」中更换备份位置（不要放在存档所在目录内），"
                 "或将备份目录改到存档目录之外。"
             )
+
+        # Q2 优化：先用 (size, mtime) 快照做快速无变更检测（只 stat 不读盘），
+        # 与最近备份的 manifest._stat 一致时直接跳过，避免全量 SHA256。
+        # 快照不一致（含旧数据无 _stat）再走全量哈希精确比对。
+        if not force:
+            try:
+                snapshot = _collect_stat_snapshot(game)
+                prev_manifest_tmp = None
+                _vs = list_versions(game_id)
+                if _vs:
+                    prev_manifest_tmp = _read_json(
+                        version_dir(game_id, _vs[0]["timestamp"]) / MANIFEST_NAME, {})
+                if prev_manifest_tmp and _snapshot_matches(snapshot, prev_manifest_tmp):
+                    log.info("存档无变更，跳过备份 [%s] %s", game_id, game.get("name"))
+                    raise BackupUnchanged("存档无变更")
+            except BackupUnchanged:
+                raise
+            except Exception:
+                pass  # 快照检测失败不影响主流程，走全量哈希
 
         full_files, dirs_info, existing = _compute_current_state(game)
         if not full_files:
@@ -573,25 +646,15 @@ def list_versions(game_id: str) -> list:
     return versions
 
 
-def _has_descendant_using(game_id: str, ts: str) -> bool:
-    """是否存在某版本以 ts 为直接 base_version。"""
+def _descendants(game_id: str, ts: str) -> list:
+    """找到以 ts 为直接 base_version 的全部后代版本目录名（按名称排序）。
+
+    Q5 优化：单次扫盘返回完整后代列表，替代原 _has_descendant_using +
+    _first_descendant 的两次独立遍历。
+    """
     bdir = game_backup_dir(game_id)
     if not bdir.exists():
-        return False
-    for child in bdir.iterdir():
-        if not child.is_dir() or child.name == ts:
-            continue
-        m = _read_json(child / META_NAME, None)
-        if m and m.get("base_version") == ts:
-            return True
-    return False
-
-
-def _first_descendant(game_id: str, ts: str):
-    """找到以 ts 为 base_version 的最早一个版本（时间正序中最早的）。"""
-    bdir = game_backup_dir(game_id)
-    if not bdir.exists():
-        return None
+        return []
     candidates = []
     for child in bdir.iterdir():
         if not child.is_dir() or child.name == ts:
@@ -600,7 +663,7 @@ def _first_descendant(game_id: str, ts: str):
         if m and m.get("base_version") == ts:
             candidates.append(child.name)
     candidates.sort()
-    return candidates[0] if candidates else None
+    return candidates
 
 
 def promote_to_full(game_id: str, ts: str):
@@ -676,10 +739,9 @@ def delete_version(game_id: str, ts: str, force: bool = False) -> bool:
     vdir = version_dir(game_id, ts)
     if not vdir.exists():
         return False
-    if _has_descendant_using(game_id, ts):
-        d = _first_descendant(game_id, ts)
-        if d:
-            promote_to_full(game_id, d)
+    descendants = _descendants(game_id, ts)
+    if descendants:
+        promote_to_full(game_id, descendants[0])
     force_rmtree(vdir)
     if vdir.exists():
         raise BackupError(f"删除版本 {ts} 失败：目录仍存在")

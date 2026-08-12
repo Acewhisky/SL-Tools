@@ -7,13 +7,10 @@
 - 下载缓存到 data/ludusavi/manifest.yaml，用 ETag 判断是否有更新（304 跳过下载）
 - manifest 占位符（%APPDATA% 等）展开为真实路径后再做存在性检查
 """
-import json
 import os
 import re
-import shutil
 import time
 import urllib.request
-from datetime import datetime
 from pathlib import Path
 
 try:
@@ -22,7 +19,7 @@ except ImportError:
     yaml = None
 
 from .config import store
-from .utils import log, expand_env_path, safe_name
+from .utils import log
 
 MANIFEST_URL = "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml"
 

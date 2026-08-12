@@ -1,17 +1,27 @@
 """端到端集成测试：备份 - 校验 - 恢复 - 哈希一致性（验收标准）。"""
 import json
+import os
 import shutil
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# 测试环境钩子子可能拦截 os/shutil 删除，用 force_rmtree 绕过
-sys.path.insert(0, r"C:\Users\Dengz\WorkBuddy\存档管理工具")
+# N5 优化：路径/端口可用环境变量覆盖，便于在其他机器/CI 运行
+#  - SAVEMGR_TEST_ROOT：项目根目录（默认取本文件上级，无需硬编码绝对路径）
+#  - SAVEMGR_TEST_PORT：服务端口（默认 8765）
+#  - SAVEMGR_TEST_SAVE：测试存档目录（默认系统 Temp 下）
+PROJECT_ROOT = Path(os.environ.get("SAVEMGR_TEST_ROOT",
+                                   str(Path(__file__).resolve().parent.parent)))
+sys.path.insert(0, str(PROJECT_ROOT))
 from backend.backup import force_rmtree
 
-BASE = "http://127.0.0.1:8765"
-TEST_SAVE = Path(r"C:\Users\Dengz\AppData\Local\Temp\savemgr_test\存档")
+BASE = "http://127.0.0.1:" + os.environ.get("SAVEMGR_TEST_PORT", "8765")
+TEST_SAVE = Path(os.environ.get(
+    "SAVEMGR_TEST_SAVE",
+    str(Path(tempfile.gettempdir()) / "savemgr_test" / "存档"),
+))
 
 passed, failed = 0, 0
 
@@ -92,8 +102,8 @@ check("校验通过", r.get("ok") and r.get("data", {}).get("ok"), r)
 print(f"  校验结果: checked={r['data'].get('checked')} mismatched={r['data'].get('mismatched')}")
 
 print("\n步骤 5: 记录备份前后哈希对比（验收标准：替换前后哈希一致）")
-# 备份版本1中所有文件的实际哈希
-vdir = Path(r"C:\Users\Dengz\WorkBuddy\存档管理工具\data\backups") / gid / ts1 / "data"
+# 备份版本1中所有文件的实际哈希（备份根目录默认为 <项目根>/data/backups）
+vdir = (PROJECT_ROOT / "data" / "backups") / gid / ts1 / "data"
 manifest = json.loads((vdir.parent / "manifest.json").read_text(encoding="utf-8"))
 print("  备份清单:")
 for f, h in manifest["files"].items():

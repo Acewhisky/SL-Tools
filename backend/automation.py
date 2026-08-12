@@ -3,15 +3,12 @@
 - 定时任务：按小时/天/周粒度，后台线程循环检查。
 - 变化监听：watchdog 监听指定游戏存档目录，变化后防抖延迟自动备份。
 """
-import json
 import threading
 import time
-import traceback
 from datetime import datetime
-from pathlib import Path
 
 from .config import store
-from .utils import log, expand_env_path, is_subpath
+from .utils import log, expand_env_path
 
 _scheduler_thread = None
 _watchers = {}
