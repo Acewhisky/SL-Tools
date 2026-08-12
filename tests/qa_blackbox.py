@@ -389,8 +389,9 @@ def run_module_F():
     # F-009 版本不存在
     r = req("POST", f"/api/games/{gid}/restore", {"timestamp": "19990101_000000"})
     check("TC-F-009", "恢复不存在版本被拒", not r.get("ok"), str(r)[:150])
-    # F-004 游戏运行中拒绝
-    req("PUT", f"/api/games/{gid}", {"processes": ["python.exe"]})
+    # F-004 游戏运行中拒绝（平台适配：Linux 进程名是 python，Windows 是 python.exe）
+    proc_name = "python.exe" if os.name == "nt" else "python"
+    req("PUT", f"/api/games/{gid}", {"processes": [proc_name]})
     r = req("POST", f"/api/games/{gid}/restore", {"timestamp": ts})
     check("TC-F-004", "游戏运行中拒绝恢复", not r.get("ok") and "运行" in str(r.get("error", "")), str(r)[:200])
     req("PUT", f"/api/games/{gid}", {"processes": []})
