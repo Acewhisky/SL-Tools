@@ -579,7 +579,13 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
             log.warning("清理旧版本失败: %s", e)
 
         log.info("备份完成 [%s] %s kind=%s -> %s", game_id, game.get("name"), kind, ts)
-        return load_version(game_id, ts)
+        v = load_version(game_id, ts)
+        if v is None:
+            vdir = version_dir(game_id, ts)
+            log.error("备份后 load_version 返回 None [%s] ts=%s vdir=%s exists=%s items=%s",
+                      game_id, ts, vdir, vdir.exists(),
+                      [p.name for p in vdir.iterdir()] if vdir.exists() else "N/A")
+        return v
 
 
 # ---------------- 元信息读取 ----------------
