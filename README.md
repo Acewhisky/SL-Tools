@@ -1,5 +1,7 @@
 # 游戏存档管理工具
 
+[![CI](https://github.com/Acewhisky/SL-Tools/actions/workflows/ci.yml/badge.svg)](https://github.com/Acewhisky/SL-Tools/actions/workflows/ci.yml)
+
 本地游戏存档手动备份工具，支持一键备份 / 一键恢复（S/L）、版本管理、哈希校验、定时与变化监听自动备份。完全离线运行，不依赖任何云端服务。
 
 当前版本：**v2.1.1**（版本号见 `backend/version.py`，单一来源）
