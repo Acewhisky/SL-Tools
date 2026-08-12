@@ -2,12 +2,10 @@
 
 目标：避免路由层堆积业务逻辑，便于复用与测试。
 """
-from pathlib import Path
-
 from .config import store
 from . import backup as bk
 from . import steam_search
-from .utils import log, expand_env_path
+from .utils import expand_env_path
 
 
 def game_dict(g) -> dict:

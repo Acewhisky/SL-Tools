@@ -241,11 +241,18 @@ async function selectGame(id) {
   // 备份目录
   $("#g-backup-dir").textContent = g.backup_dir;
 
-  // 保留信息
-  const settings = await api("/api/settings");
+  // 保留信息（P3 优化：settings 会话内缓存，避免每次选游戏都请求含目录大小统计的设置接口）
+  const settings = await getSettingsCached();
   $("#g-keep-info").textContent = `保留最近 ${settings.keep_versions} 个版本 · 压缩: ${compressName(settings.compress_format)}`;
 
   await loadVersions(id);
+}
+
+// settings 会话级缓存（P3）：openSettings 的草稿机制与详情页共用一份
+let _settingsCache = null;
+async function getSettingsCached(force = false) {
+  if (!_settingsCache || force) _settingsCache = await api("/api/settings");
+  return _settingsCache;
 }
 
 function compressName(fmt) {
@@ -471,7 +478,7 @@ $("#btn-verify-all").addEventListener("click", async () => {
 $("#btn-cleanup").addEventListener("click", async () => {
   const gid = state.currentId;
   if (!gid) return;
-  const settings = await api("/api/settings");
+  const settings = await getSettingsCached();
   const ok = await confirmDialog("清理过期备份",
     `将删除除「最近 ${settings.keep_versions} 个」之外的所有备份版本（收藏的版本永不删除）。\n确定继续吗？`,
     { okText: "清理", danger: true });
@@ -656,8 +663,8 @@ $("#platform-filter").addEventListener("click", (e) => {
 /* ---------------- 设置 ---------------- */
 
 async function openSettings() {
-  // 复用未保存草稿（task-add/task-del 后不丢失），首次打开从 API 拉
-  if (!state.settingsDraft) state.settingsDraft = await api("/api/settings");
+  // 复用未保存草稿（task-add/task-del 后不丢失），首次打开从缓存/API 拉
+  if (!state.settingsDraft) state.settingsDraft = await getSettingsCached();
   const s = state.settingsDraft;
   const taskRows = (s.auto_tasks || []).map((t, i) => `
     <div class="task-item">
@@ -846,6 +853,7 @@ async function openSettings() {
       await api("/api/settings", "POST", payload);
       toast("设置已保存", "success");
       state.settingsDraft = null;  // 清草稿，下次重新拉取
+      _settingsCache = null;       // P3：保存后缓存失效，下次强制刷新
       if (state.currentId) selectGame(state.currentId);
     } catch (err) { toast(err.message, "error"); }
   };

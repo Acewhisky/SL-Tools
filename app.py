@@ -5,10 +5,8 @@
 
 提供 REST API 与静态前端页面。
 """
-import json
 import logging
 import os
-import shutil
 import sys
 import threading
 import webbrowser
@@ -156,8 +154,16 @@ def get_settings():
     return _api_ok(s)
 
 
+_dir_size_cache = {}      # path -> (expire_ts, human_str)
+_DIR_SIZE_TTL = 60        # 秒：备份目录大小统计缓存（P1 优化，避免每次开设置页全盘遍历）
+
+
 def _dir_size_human(path):
-    import psutil
+    import time as _time
+    now = _time.time()
+    hit = _dir_size_cache.get(path)
+    if hit and hit[0] > now:
+        return hit[1]
     try:
         p = Path(path)
         if not p.exists():
@@ -170,9 +176,11 @@ def _dir_size_human(path):
                 except OSError:
                     continue
         from backend.utils import fmt_size
-        return fmt_size(total)
+        result = fmt_size(total)
     except Exception:
-        return "未知"
+        result = "未知"
+    _dir_size_cache[path] = (now + _DIR_SIZE_TTL, result)
+    return result
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -197,6 +205,8 @@ def save_settings():
     except Exception:
         store.settings["watch_interval"] = 0
     store.save_settings()
+    # 备份根目录可能变更，清空大小缓存（P1：避免显示旧目录大小）
+    _dir_size_cache.clear()
     # 监听配置变化
     automation.sync_watchers()
     # 防循环递归：备份根目录与任一存档路径重叠时返回 warning（设置仍保存，备份时会拦截）

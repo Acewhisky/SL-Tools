@@ -1,6 +1,9 @@
 import json, urllib.request, urllib.parse, time, os, shutil
 
-BASE = "http://127.0.0.1:8933"
+# N5 优化：端口/数据目录可用环境变量覆盖
+BASE = "http://127.0.0.1:" + os.environ.get("SAVEMGR_TEST_PORT", "8933")
+EXE_DATA_DIR = os.environ.get("SAVEMGR_TEST_ROOT",
+                              r"C:\Users\Dengz\AppData\Local\Temp\savemgr_probe2")
 
 def req(m, p, b=None):
     u = BASE + urllib.parse.quote(p, safe="/")
@@ -17,7 +20,7 @@ def req(m, p, b=None):
             return {"ok": False, "error": raw[:150]}
 
 # 测试 1: 变更自动备份
-save = r"C:\Users\Dengz\AppData\Local\Temp\savemgr_probe2\save_auto"
+save = os.path.join(EXE_DATA_DIR, "save_auto")
 shutil.rmtree(save, ignore_errors=True)
 os.makedirs(save)
 with open(os.path.join(save, "x.sav"), "w") as f:
@@ -50,7 +53,7 @@ print("变更自动备份:", "PASS" if ok else "FAIL")
 
 # 检查 watcher 是否建立
 print("日志最后 10 行:")
-with open(r"C:\Users\Dengz\AppData\Local\Temp\savemgr_probe2\data\app.log", "r", encoding="utf-8", errors="ignore") as f:
+with open(os.path.join(EXE_DATA_DIR, "data", "app.log"), "r", encoding="utf-8", errors="ignore") as f:
     lines = f.readlines()
 for line in lines[-10:]:
     print("  " + line.strip()[:120])
