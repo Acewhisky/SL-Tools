@@ -3,7 +3,8 @@
 ## 项目概况
 - 本地游戏存档管理工具（一键 S/L）：Flask 后端 + 原生 HTML5 前端，浏览器访问 localhost:8765
 - 启动：`start.bat`（自动建 venv 装依赖）；开发测试：`python tests/integration_test.py`
-- 当前版本：v2.0beta（backend/version.py 单一来源）
+- 当前版本：v2.1.1（backend/version.py 单一来源；tag: V2.1.1，2026-08-13 发布，含 DEFECT-UI-001 修复）
+- 版本历程：v2.0beta → v2.0.1（S1/Q1/S2 修复）→ v2.1.0（Q2 快筛/Q3 差异统计/Q5 单次扫盘/P1 目录缓存/P2 进程缓存/P3 前端缓存）→ v2.1.1（已收藏徽章取消收藏修复）
 
 ## 版本管理 (Git / GitHub)
 - GitHub 仓库：`https://github.com/Acewhisky/SL-Tools.git`（**注意仓库名是大写 `SL-Tools`**，非 sl-tools）；私有，默认分支 `main`。
