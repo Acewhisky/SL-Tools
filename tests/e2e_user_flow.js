@@ -2,7 +2,8 @@
 // 流程：启动服务 → 扫描游戏 → 选中游戏 → 开启自动备份 → 修改存档触发自动备份
 //      → 检查前端实时刷新 → 替换存档（新文件）→ 恢复体验 → 结束。
 // 所有等待都有最大超时中断（超时报 FAIL 而非无限挂起），避免"误以为卡死"。
-const puppeteer = require("C:/Users/Dengz/.workbuddy/binaries/node/workspace/node_modules/puppeteer-core");
+// 可移植：puppeteer-core 通过 NODE_PATH 或 PUPPETEER_PATH 环境变量指定
+const puppeteer = require(process.env.PUPPETEER_PATH || "puppeteer-core");
 const fs = require("fs");
 const path = require("path");
 

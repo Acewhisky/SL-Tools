@@ -1,4 +1,6 @@
-const puppeteer = require("C:/Users/Dengz/.workbuddy/binaries/node/workspace/node_modules/puppeteer-core");
+// 可移植：puppeteer-core 通过 NODE_PATH 或 PUPPETEER_PATH 环境变量指定
+const puppeteer = require(process.env.PUPPETEER_PATH || "puppeteer-core");
+const path = require("path");
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -33,6 +35,6 @@ const puppeteer = require("C:/Users/Dengz/.workbuddy/binaries/node/workspace/nod
     };
   });
   console.log(JSON.stringify(result, null, 2));
-  await page.screenshot({ path: "C:/Users/Dengz/WorkBuddy/存档管理工具/debug_ui_after.png" });
+  await page.screenshot({ path: path.join(__dirname, "debug_ui_after.png") });
   await browser.close();
 })().catch(e => { console.error("ERR:", e.message); process.exit(1); });

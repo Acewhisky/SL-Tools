@@ -1,6 +1,6 @@
 # 存档管理工具 v2.0beta 发布前全面代码审查报告
 
-- 审查对象：`C:\Users\Dengz\WorkBuddy\存档管理工具`（分支 `Dev`，与 `main` 无差异）
+- 审查对象：`<项目根>`（分支 `Dev`，与 `main` 无差异）
 - 审查时间：2026-08-12
 - 代码规模：Python 约 3900 行（12 个 .py）+ 前端约 1620 行（HTML/CSS/JS）+ 测试 620 行
 - 验证基线：`integration_test.py` 54 项全通过 ✅；全部 .py 编译通过 ✅；JS 语法检查通过 ✅
@@ -17,7 +17,7 @@
 | N2 | 🟢 建议 | `import shutil`、`import json` 在 app.py 中未使用 | app.py L10-11 | 同上，且 app.py L160 `import psutil` 是函数内导入且未使用 |
 | N3 | 🟢 建议 | `_read_json`/`_write_json` 兼容别名 | backup.py L41-42 | 注释称"保留旧调用名"，但仓库无历史包袱（仅 2 条提交），别名无存在必要 |
 | N4 | ⚪ 提示 | 模块命名混用单复数 | backend/ | `steam_search.py` 内部函数 `_strip_name` 用 `s` 变量，`game_db.py` 数据与函数混在 918 行文件中，数据量大时可拆 `game_data.py` |
-| N5 | ⚪ 提示 | 测试硬编码本机绝对路径 | tests/integration_test.py L10, L14 | `sys.path.insert(0, r"C:\Users\Dengz\...")` 与 BASE 端口写死，换机器需改代码；建议用环境变量/相对路径 |
+| N5 | ⚪ 提示 | 测试硬编码本机绝对路径 | tests/integration_test.py L10, L14 | `sys.path.insert(0, r"<项目根>")` 与 BASE 端口写死，换机器需改代码；建议用环境变量/相对路径 |
 
 ### 2. 代码质量（Duplication / Complexity / Error Handling）
 

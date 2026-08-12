@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\Dengz\WorkBuddy\存档管理工具")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import backup as bk
 from backend.config import store

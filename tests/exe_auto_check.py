@@ -1,9 +1,9 @@
-import json, urllib.request, urllib.parse, time, os, shutil
+import json, urllib.request, urllib.parse, time, os, shutil, tempfile
 
-# N5 优化：端口/数据目录可用环境变量覆盖
+# N5 优化：端口/数据目录可用环境变量覆盖（默认用系统临时目录，可移植）
 BASE = "http://127.0.0.1:" + os.environ.get("SAVEMGR_TEST_PORT", "8933")
 EXE_DATA_DIR = os.environ.get("SAVEMGR_TEST_ROOT",
-                              r"C:\Users\Dengz\AppData\Local\Temp\savemgr_probe2")
+                              os.path.join(tempfile.gettempdir(), "savemgr_probe2"))
 
 def req(m, p, b=None):
     u = BASE + urllib.parse.quote(p, safe="/")
