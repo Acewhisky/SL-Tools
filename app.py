@@ -251,28 +251,62 @@ def list_hidden_games():
     return _api_ok(games)
 
 
-@app.route("/api/games", methods=["POST"])
-def add_game():
-    data = request.get_json(force=True, silent=True) or {}
+def _clean_str_list(items) -> list:
+    """清理字符串列表：去空白、过滤空项。"""
+    return [p.strip() for p in (items or []) if p and p.strip()]
+
+
+def _build_game_from_request(data: dict) -> tuple:
+    """从请求数据构造游戏对象，返回 (name, paths, game)。"""
     name = (data.get("name") or "").strip()
-    paths = [p.strip() for p in (data.get("save_paths") or []) if p and p.strip()]
-    if not name:
-        return _api_err("游戏名称不能为空")
-    if not paths:
-        return _api_err("至少需要一个存档路径")
+    paths = _clean_str_list(data.get("save_paths"))
     game = {
         "id": data.get("id"),
         "name": name,
         "platform": data.get("platform") or ["Other"],
         "save_paths": paths,
-        "processes": [p.strip() for p in (data.get("processes") or []) if p and p.strip()],
+        "processes": _clean_str_list(data.get("processes")),
         "custom": True,
         "source": "custom",
         "auto_backup": bool(data.get("auto_backup", False)),
     }
+    return name, paths, game
+
+
+def _validate_game_fields(name: str, paths: list):
+    """校验游戏必填字段，返回错误消息或 None。"""
+    if not name:
+        return "游戏名称不能为空"
+    if not paths:
+        return "至少需要一个存档路径"
+    return None
+
+
+@app.route("/api/games", methods=["POST"])
+def add_game():
+    data = request.get_json(force=True, silent=True) or {}
+    name, paths, game = _build_game_from_request(data)
+    err = _validate_game_fields(name, paths)
+    if err:
+        return _api_err(err)
     store.upsert_game(game)
     automation.sync_watchers()
     return _api_ok(_game_dict(game))
+
+
+def _apply_game_updates(g: dict, data: dict):
+    """把请求数据中的字段更新到游戏对象 g（仅更新存在的键）。"""
+    for key in ("name",):
+        if key in data:
+            g[key] = (data[key] or "").strip()
+    for key in ("save_paths", "processes"):
+        if key in data:
+            g[key] = _clean_str_list(data[key])
+    if "platform" in data:
+        g["platform"] = data["platform"] or ["Other"]
+    for key in ("auto_backup", "hidden", "favorite"):
+        if key in data:
+            g[key] = bool(data[key])
 
 
 @app.route("/api/games/<game_id>", methods=["PUT"])
@@ -281,20 +315,7 @@ def update_game(game_id):
     if not g:
         return _api_err("游戏不存在", 404)
     data = request.get_json(force=True, silent=True) or {}
-    if "name" in data:
-        g["name"] = (data["name"] or "").strip()
-    if "save_paths" in data:
-        g["save_paths"] = [p.strip() for p in data["save_paths"] if p and p.strip()]
-    if "processes" in data:
-        g["processes"] = [p.strip() for p in data["processes"] if p and p.strip()]
-    if "platform" in data:
-        g["platform"] = data["platform"] or ["Other"]
-    if "auto_backup" in data:
-        g["auto_backup"] = bool(data["auto_backup"])
-    if "hidden" in data:
-        g["hidden"] = bool(data["hidden"])
-    if "favorite" in data:
-        g["favorite"] = bool(data["favorite"])
+    _apply_game_updates(g, data)
     store.upsert_game(g)
     automation.sync_watchers()
     return _api_ok(_game_dict(g))
@@ -430,31 +451,48 @@ def _allowed_open_paths():
     return allowed
 
 
-@app.route("/api/open", methods=["POST"])
-def open_in_explorer():
-    """在系统文件管理器中打开指定路径（仅允许白名单内路径）。"""
-    data = request.get_json(force=True, silent=True) or {}
-    raw = (data.get("path") or "").strip()
+def _resolve_open_target(raw: str):
+    """解析并校验打开路径，返回 (target_resolved, error_msg)。
+
+    校验非空、存在、在白名单内。失败时 target_resolved 为 None。
+    """
     if not raw:
-        return _api_err("路径为空")
+        return None, "路径为空"
     target = Path(raw)
     if not target.exists():
-        return _api_err("路径不存在")
+        return None, "路径不存在"
     allowed = _allowed_open_paths()
     try:
         target_resolved = target.resolve()
     except Exception:
         target_resolved = target
-    if target_resolved not in allowed and target not in allowed:
-        return _api_err("此路径不在允许列表内，仅可打开游戏存档路径与备份目录")
+    if target_resolved in allowed or target in allowed:
+        return target_resolved, None
+    return None, "此路径不在允许列表内，仅可打开游戏存档路径与备份目录"
+
+
+def _open_in_file_manager(path):
+    """跨平台打开文件管理器。"""
+    import subprocess
+    if sys.platform == "win32":
+        cmd = ["explorer.exe", str(path)]
+    elif sys.platform == "darwin":
+        cmd = ["open", str(path)]
+    else:
+        cmd = ["xdg-open", str(path)]
+    subprocess.Popen(cmd)
+
+
+@app.route("/api/open", methods=["POST"])
+def open_in_explorer():
+    """在系统文件管理器中打开指定路径（仅允许白名单内路径）。"""
+    data = request.get_json(force=True, silent=True) or {}
+    raw = (data.get("path") or "").strip()
+    target_resolved, err = _resolve_open_target(raw)
+    if err:
+        return _api_err(err)
     try:
-        import subprocess
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer.exe", str(target_resolved)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(target_resolved)])
-        else:
-            subprocess.Popen(["xdg-open", str(target_resolved)])
+        _open_in_file_manager(target_resolved)
         log.info("已打开文件管理器: %s", target_resolved)
         return _api_ok({"path": str(target_resolved)})
     except Exception as e:
@@ -491,6 +529,38 @@ def export_config():
     return _api_ok(payload)
 
 
+def _import_games(games: list) -> int:
+    """导入游戏列表（跳过非法项），返回导入数量。"""
+    imported = 0
+    for g in games:
+        if not isinstance(g, dict) or not g.get("name"):
+            continue
+        g.setdefault("custom", True)
+        g.setdefault("source", "custom")
+        store.upsert_game(g)
+        imported += 1
+    return imported
+
+
+def _import_settings(src: dict):
+    """导入设置（类型校验，脏配置直接丢弃）。"""
+    if isinstance(src.get("backup_root"), str) and src["backup_root"].strip():
+        store.settings["backup_root"] = src["backup_root"].strip()
+    try:
+        if isinstance(src.get("keep_versions"), int):
+            store.settings["keep_versions"] = max(1, min(src["keep_versions"], 99))
+    except Exception:
+        pass
+    if isinstance(src.get("compress_format"), str) and src["compress_format"] in ("none", "zip", "tar.gz"):
+        store.settings["compress_format"] = src["compress_format"]
+    try:
+        if isinstance(src.get("watch_delay"), (int, float)):
+            store.settings["watch_delay"] = max(1, min(float(src["watch_delay"]), 120))
+    except Exception:
+        pass
+    store.save_settings()
+
+
 @app.route("/api/config/import", methods=["POST"])
 def import_config():
     data = request.get_json(force=True, silent=True) or {}
@@ -499,31 +569,9 @@ def import_config():
     # 兼容直接导入 {games:[...], settings:{...}}
     imported = 0
     if isinstance(data.get("games"), list):
-        for g in data["games"]:
-            if not isinstance(g, dict) or not g.get("name"):
-                continue
-            g.setdefault("custom", True)
-            g.setdefault("source", "custom")
-            store.upsert_game(g)
-            imported += 1
+        imported = _import_games(data["games"])
     if isinstance(data.get("settings"), dict):
-        # 类型校验（S2 修复）：只接受合法类型的值，脏配置直接丢弃
-        src = data["settings"]
-        if isinstance(src.get("backup_root"), str) and src["backup_root"].strip():
-            store.settings["backup_root"] = src["backup_root"].strip()
-        try:
-            if isinstance(src.get("keep_versions"), int):
-                store.settings["keep_versions"] = max(1, min(src["keep_versions"], 99))
-        except Exception:
-            pass
-        if isinstance(src.get("compress_format"), str) and src["compress_format"] in ("none", "zip", "tar.gz"):
-            store.settings["compress_format"] = src["compress_format"]
-        try:
-            if isinstance(src.get("watch_delay"), (int, float)):
-                store.settings["watch_delay"] = max(1, min(float(src["watch_delay"]), 120))
-        except Exception:
-            pass
-        store.save_settings()
+        _import_settings(data["settings"])
     automation.sync_watchers()
     return _api_ok({"imported_games": imported, "total": len(store.games)})
 

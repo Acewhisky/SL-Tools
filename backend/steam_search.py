@@ -99,6 +99,18 @@ def icon_url_for(game: dict) -> str:
     return ICON_TPL.format(appid=appid) if appid else None
 
 
+def _collect_icon_candidates() -> list:
+    """收集需要匹配图标的游戏（跳过已有 appid / 自定义 / 隐藏，可减少请求）。"""
+    need = []
+    for g in store.games:
+        if g.get("steam_appid"):
+            continue
+        if g.get("custom") or g.get("hidden"):
+            continue
+        need.append(g)
+    return need
+
+
 def match_icons(force: bool = False) -> dict:
     """扫描后调用：为缺失 appid 的游戏联网匹配 Steam 图标，结果写回 games.json。
 
@@ -107,15 +119,7 @@ def match_icons(force: bool = False) -> dict:
     """
     import concurrent.futures
 
-    need = []
-    for g in store.games:
-        if g.get("steam_appid"):
-            continue
-        # 自定义游戏/已隐藏的跳过（可减少请求）
-        if g.get("custom") or g.get("hidden"):
-            continue
-        need.append(g)
-
+    need = _collect_icon_candidates()
     if not need:
         return {"matched": 0, "total": 0, "failed": 0}
 

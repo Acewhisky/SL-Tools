@@ -145,6 +145,55 @@ def _make_observer(path: str):
     return Observer()
 
 
+def _build_wanted_watchers() -> dict:
+    """构建需要监听的游戏 id -> 路径映射（防循环递归排除重叠路径）。"""
+    wanted = {}
+    conflicts = {}
+    from .backup import find_backup_root_conflicts
+    for c in find_backup_root_conflicts():
+        conflicts[c["game"]] = c["save"]
+    for game in store.games:
+        if not game.get("auto_backup"):
+            continue
+        for p in game.get("save_paths", []):
+            if not (p and expand_env_path(p).exists()):
+                continue
+            pp = str(expand_env_path(p))
+            # 防循环递归：存档路径与备份根目录重叠时不监听（备份已被拦截，监听只会空转）
+            if game["id"] in conflicts or game.get("name") in conflicts:
+                log.warning("存档路径与备份目录重叠，跳过监听 [%s] %s（请在设置中更换备份位置）",
+                            game["id"], pp)
+                continue
+            wanted[game["id"]] = pp
+            break
+    return wanted
+
+
+def _stop_unwanted_watchers(wanted: dict):
+    """停止不再需要的 watcher。"""
+    for k in list(_watchers.keys()):
+        if k in wanted:
+            continue
+        try:
+            _watchers[k].stop()
+        except Exception:
+            pass
+        del _watchers[k]
+
+
+def _start_new_watchers(wanted: dict):
+    """启动新 watcher（路径刚出现时主动备份一次）。"""
+    for gid, path in wanted.items():
+        if gid in _watchers:
+            continue
+        obs = _make_watcher(gid, path)
+        if obs:
+            _watchers[gid] = obs
+            # 保险：首次建立 watcher 时备份一次（不 force，无变更则跳过）
+            log.info("监听器建立，主动备份一次 [%s] %s", gid, path)
+            _run_backup(gid, note="监听器建立时的初始备份")
+
+
 def sync_watchers():
     """根据设置与游戏配置同步监听器。
 
@@ -157,44 +206,9 @@ def sync_watchers():
     """
     global _watchers
     with _sync_lock:
-        wanted = {}
-        conflicts = {}
-        from .backup import find_backup_root_conflicts
-        for c in find_backup_root_conflicts():
-            conflicts[c["game"]] = c["save"]
-        for game in store.games:
-            if not game.get("auto_backup"):
-                continue
-            for p in game.get("save_paths", []):
-                if p and expand_env_path(p).exists():
-                    pp = str(expand_env_path(p))
-                    # 防循环递归：存档路径与备份根目录重叠时不监听（备份已被拦截，监听只会空转）
-                    if game["id"] in conflicts or game.get("name") in conflicts:
-                        log.warning("存档路径与备份目录重叠，跳过监听 [%s] %s（请在设置中更换备份位置）",
-                                    game["id"], pp)
-                        continue
-                    wanted[game["id"]] = pp
-                    break
-
-        # 停止不再需要的
-        for k in list(_watchers.keys()):
-            if k not in wanted:
-                try:
-                    _watchers[k].stop()
-                except Exception:
-                    pass
-                del _watchers[k]
-
-        # 启动新的 + 路径刚出现时主动备份一次
-        for gid, path in wanted.items():
-            if gid in _watchers:
-                continue
-            obs = _make_watcher(gid, path)
-            if obs:
-                _watchers[gid] = obs
-                # 保险：首次建立 watcher 时备份一次（不 force，无变更则跳过）
-                log.info("监听器建立，主动备份一次 [%s] %s", gid, path)
-                _run_backup(gid, note="监听器建立时的初始备份")
+        wanted = _build_wanted_watchers()
+        _stop_unwanted_watchers(wanted)
+        _start_new_watchers(wanted)
 
 
 def stop_watchers():

@@ -45,34 +45,46 @@ def list_games_sorted() -> list:
     return fav + other
 
 
-def backup_all(force: bool = False, note: str = "", mode: str = None) -> dict:
-    """备份所有游戏（无变更自动跳过）。返回汇总结果，供路由与测试复用。"""
-    results = []
-    for g in store.games:
-        if g.get("hidden"):
-            continue  # 隐藏的游戏不参与批量备份
-        item = {"id": g.get("id"), "name": g.get("name", ""), "status": "skipped", "timestamp": None}
-        try:
-            # create_backup 内部已做无变更检测（BackupUnchanged -> skipped），
-            # 不再重复预检（Q1 修复：避免大存档双重全量 SHA256）
-            v = bk.create_backup(g, note=note, mode=mode, force=force)
-            item["status"] = "ok"
-            item["timestamp"] = v["timestamp"]
-        except bk.BackupUnchanged as e:
-            item["status"] = "skipped"
-            item["reason"] = str(e)
-        except bk.BackupError as e:
-            item["status"] = "error"
-            item["reason"] = str(e)
-        except Exception as e:
-            item["status"] = "error"
-            item["reason"] = str(e)
-        results.append(item)
+def _backup_one_game(g: dict, note: str, mode: str, force: bool):
+    """备份单个游戏，返回结果 item。隐藏游戏返回 None（跳过）。"""
+    if g.get("hidden"):
+        return None  # 隐藏的游戏不参与批量备份
+    item = {"id": g.get("id"), "name": g.get("name", ""), "status": "skipped", "timestamp": None}
+    try:
+        # create_backup 内部已做无变更检测（BackupUnchanged -> skipped），
+        # 不再重复预检（Q1 修复：避免大存档双重全量 SHA256）
+        v = bk.create_backup(g, note=note, mode=mode, force=force)
+        item["status"] = "ok"
+        item["timestamp"] = v["timestamp"]
+    except bk.BackupUnchanged as e:
+        item["status"] = "skipped"
+        item["reason"] = str(e)
+    except bk.BackupError as e:
+        item["status"] = "error"
+        item["reason"] = str(e)
+    except Exception as e:
+        item["status"] = "error"
+        item["reason"] = str(e)
+    return item
+
+
+def _summarize_backup_results(results: list) -> dict:
+    """汇总备份结果，返回统计 dict。"""
     ok_count = sum(1 for r in results if r["status"] == "ok")
     skipped = sum(1 for r in results if r["status"] == "skipped")
     errors = [r for r in results if r["status"] == "error"]
     return {"results": results, "ok": ok_count, "skipped": skipped,
             "error": len(errors), "errors": errors}
+
+
+def backup_all(force: bool = False, note: str = "", mode: str = None) -> dict:
+    """备份所有游戏（无变更自动跳过）。返回汇总结果，供路由与测试复用。"""
+    results = []
+    for g in store.games:
+        item = _backup_one_game(g, note, mode, force)
+        if item:
+            results.append(item)
+    return _summarize_backup_results(results)
 
 
 def check_backup_root_conflict() -> str:
