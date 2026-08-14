@@ -4,7 +4,7 @@
 
 本地游戏存档备份工具：一键备份 / 恢复（S/L）、版本管理、哈希校验、定时与变化监听自动备份。完全离线运行，不依赖任何云端服务。
 
-当前版本：**v2.1.1**（版本号见 `backend/version.py`，单一来源）
+当前版本：**v2.2.1**（版本号见 `backend/version.py`，单一来源）
 
 ## 开源许可
 
@@ -53,6 +53,13 @@ python app.py
 | 运行日志 | 顶栏「📋 日志」查看操作记录与错误 |
 
 ## 迭代记录
+
+### v2.2.1（2026-08-15）
+本次合并 refactor_dev（PR #4），含增量备份缺陷修复、代码重构与测试增强：
+- 🐛 修复增量备份 `promote_to_full` 重写目录内容后未恢复 mtime，导致 `list_versions` 排序错乱、`_load_latest_version` 增量基准选错：操作前记录 `orig_mtime_ns`，末尾 `os.utime` 恢复（`OSError` 优雅降级）
+- 🧹 重构：7 文件 20 处 CC>10 方法降至 ≤10，平均复杂度 5.37→4.19，D 级归零（功能不变）
+- 🧪 测试：新增 `qa_refactor_dev.py`（19 例）与 `test_incr_cleanup_regression.py`（7 例 pytest）并纳入 CI；`requirements.txt` 补 `pytest>=8.0`
+- 📝 报告用例总数笔误 32→38 修正
 
 ### v2.1.1（2026-08-13）
 - 🐛 修复已收藏版本无法通过点击「★ 已收藏」徽章取消收藏（DEFECT-UI-001）：`renderTimeline` 中已收藏徽章缺少 `data-ts` 属性，补上与收藏入口一致的属性后取消收藏事件可正确触发
