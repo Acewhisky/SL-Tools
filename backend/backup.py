@@ -753,6 +753,11 @@ def promote_to_full(game_id: str, ts: str):
         raise BackupError(f"版本 {ts} 不存在")
     if meta.get("kind") == KIND_FULL:
         return
+    # 记录原始目录 mtime：promote 会重写目录内容（重建 full、移动文件、
+    # 写回 meta/manifest），这些写操作会刷新 vdir 的 mtime，进而破坏
+    # list_versions 基于 mtime 的倒序排序（将本应较旧的被提升版本误判为最新）。
+    # promote 只是"逻辑升级"，不改变版本的逻辑创建顺序，故操作后恢复原始 mtime。
+    orig_mtime_ns = vdir.stat().st_mtime_ns
     # 重建到临时目录（版本目录外，删除版本时不受影响）
     tmp = game_backup_dir(game_id) / f".promote_{ts}"
     force_rmtree(tmp)
@@ -789,6 +794,12 @@ def promote_to_full(game_id: str, ts: str):
     manifest["changes"] = {}
     manifest["deleted"] = []
     _write_json(vdir / MANIFEST_NAME, manifest)
+
+    # 恢复目录 mtime，避免刷新后的 mtime 破坏 list_versions 基于 mtime 的倒序排序
+    try:
+        os.utime(vdir, ns=(orig_mtime_ns, orig_mtime_ns))
+    except OSError as e:
+        log.warning("promote 恢复目录 mtime 失败(忽略): %s", e)
 
 
 def set_favorite(game_id: str, ts: str, fav: bool) -> dict:
