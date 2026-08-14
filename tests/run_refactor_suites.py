@@ -57,7 +57,7 @@ REPAIR_SUMMARY = (
     "该缺陷非重构引入（main 分支同样存在），且会影响 _load_latest_version 的增量基准选择。"
     "修复方式：promote_to_full 在重写前记录目录原始 mtime，操作完成后用 os.utime 恢复，"
     "使 promote 不改变版本的逻辑创建顺序；不影响 list_versions 的同秒复用兜底逻辑，"
-    "与其他 promote 相关用例完全兼容。修复后该用例由 FAIL 转为 PASS，全量 32/32 通过。"
+    "与其他 promote 相关用例完全兼容。修复后该用例由 FAIL 转为 PASS，全量 38/38 通过。"
 )
 
 

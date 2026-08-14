@@ -1,6 +1,6 @@
 # refactor_dev 分支测试报告
 
-- 分支：`refactor_dev`（commit `e797fba` docs: 添加第一轮复杂度重构成果报告）
+- 分支：`refactor_dev`（commit `4b5a696` fix(backup): 恢复 promote_to_full 后的版本目录 mtime，修复 list_versions 排序）
 - 执行时间：20260815
 - Python：3.13.14
 - 结论：✅ 全部通过，重构未引入回归
@@ -65,5 +65,5 @@
 
 ## 缺陷修复说明（refactor_dev 分支）
 
-- 本次修复（refactor_dev 分支，backend/backup.py · promote_to_full）：此前 test_incr_cleanup_regression.py::test_auto_cleanup_when_full 确定性失败，根因是 cleanup_versions 删除有后代的旧版本时会调用 promote_to_full，该函数重写被提升版本的目录内容（重建 full、移动文件、写回 meta/manifest），这些写操作刷新了目录 mtime；而 list_versions 按 (mtime_ns, timestamp) 倒序排序，使被提升的较旧版本被误判为「最新」，导致断言 versions[0]==v3 失败。该缺陷非重构引入（main 分支同样存在），且会影响 _load_latest_version 的增量基准选择。修复方式：promote_to_full 在重写前记录目录原始 mtime，操作完成后用 os.utime 恢复，使 promote 不改变版本的逻辑创建顺序；不影响 list_versions 的同秒复用兜底逻辑，与其他 promote 相关用例完全兼容。修复后该用例由 FAIL 转为 PASS，全量 32/32 通过。
+- 本次修复（refactor_dev 分支，backend/backup.py · promote_to_full）：此前 test_incr_cleanup_regression.py::test_auto_cleanup_when_full 确定性失败，根因是 cleanup_versions 删除有后代的旧版本时会调用 promote_to_full，该函数重写被提升版本的目录内容（重建 full、移动文件、写回 meta/manifest），这些写操作刷新了目录 mtime；而 list_versions 按 (mtime_ns, timestamp) 倒序排序，使被提升的较旧版本被误判为「最新」，导致断言 versions[0]==v3 失败。该缺陷非重构引入（main 分支同样存在），且会影响 _load_latest_version 的增量基准选择。修复方式：promote_to_full 在重写前记录目录原始 mtime，操作完成后用 os.utime 恢复，使 promote 不改变版本的逻辑创建顺序；不影响 list_versions 的同秒复用兜底逻辑，与其他 promote 相关用例完全兼容。修复后该用例由 FAIL 转为 PASS，全量 38/38 通过。
 
