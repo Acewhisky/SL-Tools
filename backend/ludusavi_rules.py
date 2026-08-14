@@ -113,6 +113,51 @@ def _fetch_manifest_from(source_url: str, headers: dict, timeout: float) -> tupl
         return status, body, resp.headers.get("ETag")
 
 
+def _manifest_cache_fresh(manifest_path: Path, etag_path: Path) -> bool:
+    """本地缓存是否新鲜（7 天内下载过）。返回 True 时可直接用缓存。"""
+    if not manifest_path.exists():
+        return False
+    if not etag_path.exists():
+        return True  # 有 manifest 无 etag，直接用
+    try:
+        mtime = manifest_path.stat().st_mtime
+        return time.time() - mtime < 7 * 86400
+    except OSError:
+        return False
+
+
+def _select_manifest_sources(source_mode: str) -> list:
+    """按设置选择 manifest 下载源列表（auto 多源回退 / jsdelivr / github）。"""
+    JSDELIVR = "https://cdn.jsdelivr.net/gh/mtkennerly/ludusavi-manifest@master/data/manifest.yaml"
+    JSDELIVR_FASTLY = "https://fastly.jsdelivr.net/gh/mtkennerly/ludusavi-manifest@master/data/manifest.yaml"
+    if source_mode == "jsdelivr":
+        return [("jsDelivr", JSDELIVR), ("jsDelivr-fastly", JSDELIVR_FASTLY)]
+    if source_mode == "github":
+        return [("GitHub", MANIFEST_URL)]
+    return [("jsDelivr", JSDELIVR), ("jsDelivr-fastly", JSDELIVR_FASTLY), ("GitHub", MANIFEST_URL)]
+
+
+def _try_download_sources(sources: list, headers: dict, manifest_path: Path, etag_path: Path):
+    """逐源尝试下载 manifest，成功返回 manifest_path，全失败返回 None。"""
+    last_err = None
+    for name, url in sources:
+        try:
+            status, body, new_etag = _fetch_manifest_from(url, headers, DOWNLOAD_TIMEOUT)
+            if status == 304:  # 无更新
+                log.info("Ludusavi manifest 无更新 (304, %s)", name)
+                return manifest_path
+            manifest_path.write_bytes(body)
+            if new_etag:
+                etag_path.write_text(new_etag, encoding="utf-8")
+            log.info("Ludusavi manifest 下载完成 (%s): %.1f KB", name, len(body) / 1024)
+            return manifest_path
+        except Exception as e:
+            last_err = e
+            log.warning("Ludusavi manifest 下载失败 (%s): %s", name, e)
+    log.warning("Ludusavi manifest 所有源均失败（使用缓存或回退）: %s", last_err)
+    return None
+
+
 def download_manifest(force: bool = False) -> Path:
     """下载/更新 Ludusavi manifest 到缓存，返回缓存文件路径。
 
@@ -129,16 +174,8 @@ def download_manifest(force: bool = False) -> Path:
     etag_path = cache / ETAG_FILE
 
     # 本地已是最新（最近 7 天内下载过且 force=False）-> 直接用缓存
-    if not force and manifest_path.exists():
-        if etag_path.exists():
-            try:
-                mtime = manifest_path.stat().st_mtime
-                if time.time() - mtime < 7 * 86400:
-                    return manifest_path
-            except OSError:
-                pass
-        else:
-            return manifest_path
+    if not force and _manifest_cache_fresh(manifest_path, etag_path):
+        return manifest_path
 
     # 尝试联网更新（多源回退）
     headers = {"User-Agent": "savemgr/1.0"}
@@ -148,38 +185,27 @@ def download_manifest(force: bool = False) -> Path:
         except OSError:
             pass
 
-    # 按设置选择源：auto=多源回退 / jsdelivr=仅CDN / github=仅原源
-    source_mode = store.settings.get("rules_source", "auto")
-    JSDELIVR = "https://cdn.jsdelivr.net/gh/mtkennerly/ludusavi-manifest@master/data/manifest.yaml"
-    JSDELIVR_FASTLY = "https://fastly.jsdelivr.net/gh/mtkennerly/ludusavi-manifest@master/data/manifest.yaml"
-    if source_mode == "jsdelivr":
-        sources = [("jsDelivr", JSDELIVR), ("jsDelivr-fastly", JSDELIVR_FASTLY)]
-    elif source_mode == "github":
-        sources = [("GitHub", MANIFEST_URL)]
-    else:  # auto
-        sources = [
-            ("jsDelivr", JSDELIVR),
-            ("jsDelivr-fastly", JSDELIVR_FASTLY),
-            ("GitHub", MANIFEST_URL),
-        ]
-    last_err = None
-    for name, url in sources:
-        try:
-            status, body, new_etag = _fetch_manifest_from(url, headers, DOWNLOAD_TIMEOUT)
-            if status == 304:  # 无更新
-                log.info("Ludusavi manifest 无更新 (304, %s)", name)
-                return manifest_path
-            manifest_path.write_bytes(body)
-            if new_etag:
-                etag_path.write_text(new_etag, encoding="utf-8")
-            log.info("Ludusavi manifest 下载完成 (%s): %.1f KB", name, len(body) / 1024)
-            return manifest_path
-        except Exception as e:
-            last_err = e
-            log.warning("Ludusavi manifest 下载失败 (%s): %s", name, e)
-
-    log.warning("Ludusavi manifest 所有源均失败（使用缓存或回退）: %s", last_err)
+    sources = _select_manifest_sources(store.settings.get("rules_source", "auto"))
+    downloaded = _try_download_sources(sources, headers, manifest_path, etag_path)
+    if downloaded:
+        return downloaded
     return manifest_path if manifest_path.exists() else None
+
+
+def _is_manifest_path_line(game_name, in_files: bool, indent: int, stripped: str) -> bool:
+    """判断当前行是否为 manifest 路径行。"""
+    return (game_name and in_files and indent >= 4
+            and stripped.startswith(('"', "/", "<")))
+
+
+def _extract_manifest_path(stripped: str):
+    """从 manifest 路径行提取干净路径；含 store 占位符返回 None 跳过。"""
+    path = stripped.split(":", 1)[0].strip()
+    if path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    if "{" in path:
+        return None  # 含 store 相关占位符（{installDir} 等）-> 跳过
+    return path
 
 
 def _parse_manifest_fast(manifest_path: Path) -> dict:
@@ -212,16 +238,11 @@ def _parse_manifest_fast(manifest_path: Path) -> dict:
             result[game_name] = cur_paths
         elif game_name and stripped == "files:":
             in_files = True
-        elif game_name and in_files and indent >= 4 and (stripped.startswith(('"', "/", "<"))):
+        elif _is_manifest_path_line(game_name, in_files, indent, stripped):
             # 路径行：形如 '  "<winAppData>/xxx":' 或 '  /xxx:'
-            path = stripped.split(":", 1)[0].strip()
-            # 去掉引号
-            if path.startswith('"') and path.endswith('"'):
-                path = path[1:-1]
-            if "{" in path:
-                # 含 store 相关占位符（{installDir} 等）-> 跳过
-                continue
-            cur_paths.append(path)
+            path = _extract_manifest_path(stripped)
+            if path:
+                cur_paths.append(path)
     return result
 
 
@@ -250,14 +271,23 @@ def _local_dir_name_set() -> set:
     return names
 
 
-def _scan_fast(manifest_path: Path) -> list:
-    """快速扫描：先构建本机目录名集合，解析 manifest 做集合匹配，候选精确确认。"""
-    local_names = _local_dir_name_set()
-    if not local_names:
-        return []
+def _find_game_dir_in_path(expanded: str):
+    """从展开路径中提取存档根关键字后的游戏目录名（小写），无则 None。
 
-    rules = _parse_manifest_fast(manifest_path)
-    candidates = {}  # game_name -> set(展开路径)
+    存档根关键字：AppData/Roaming, AppData/Local, LocalLow, Saved Games, Documents。
+    """
+    segs = [s.lower() for s in expanded.split("/") if s]
+    for i, s in enumerate(segs):
+        if s in ("roaming", "local", "locallow", "saved games", "documents"):
+            if i + 1 < len(segs):
+                return segs[i + 1]
+            return None
+    return None
+
+
+def _collect_scan_candidates(rules: dict, local_names: set) -> dict:
+    """集合匹配：构建 game_name -> set(命中展开路径) 候选。"""
+    candidates = {}
     for name, paths in rules.items():
         hit_paths = set()
         for p in paths:
@@ -265,21 +295,16 @@ def _scan_fast(manifest_path: Path) -> list:
             if "<" in expanded or ">" in expanded:
                 # 仍有未识别的占位符（<base>/<root>/<xdgConfig> 等）-> 跳过
                 continue
-            # 找到存档根关键字（AppData/Roaming, AppData/Local, LocalLow,
-            # Saved Games, Documents），其后的第一级目录名即游戏目录
-            segs = [s.lower() for s in expanded.split("/") if s]
-            game_dir = None
-            for i, s in enumerate(segs):
-                if s in ("roaming", "local", "locallow", "saved games", "documents"):
-                    if i + 1 < len(segs):
-                        game_dir = segs[i + 1]
-                    break
+            game_dir = _find_game_dir_in_path(expanded)
             if game_dir and game_dir in local_names:
                 hit_paths.add(expanded)
         if hit_paths:
             candidates[name] = hit_paths
+    return candidates
 
-    # 候选精确确认（仅确认候选，数量很少）
+
+def _confirm_scan_candidates(candidates: dict) -> list:
+    """精确确认候选路径真实存在，返回 found 列表。"""
     found = []
     for name, paths in candidates.items():
         existed = []
@@ -298,6 +323,18 @@ def _scan_fast(manifest_path: Path) -> list:
                 "detected": True,
                 "source": "ludusavi",
             })
+    return found
+
+
+def _scan_fast(manifest_path: Path) -> list:
+    """快速扫描：先构建本机目录名集合，解析 manifest 做集合匹配，候选精确确认。"""
+    local_names = _local_dir_name_set()
+    if not local_names:
+        return []
+
+    rules = _parse_manifest_fast(manifest_path)
+    candidates = _collect_scan_candidates(rules, local_names)
+    found = _confirm_scan_candidates(candidates)
     log.info("Ludusavi 快速扫描: 候选 %d 个, 命中 %d 个", len(candidates), len(found))
     return found
 

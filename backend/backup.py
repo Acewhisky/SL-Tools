@@ -162,6 +162,23 @@ class BackupUnchanged(Exception):
     """存档无变更，无需备份。"""
 
 
+def _diff_file_lists(full_files: dict, prev_files: dict) -> tuple:
+    """按哈希差异统计变更/删除文件数，返回 (changed_count, deleted_count)。"""
+    changed = sum(1 for rel, h in full_files.items() if prev_files.get(rel) != h)
+    deleted = sum(1 for rel in prev_files if rel not in full_files)
+    return changed, deleted
+
+
+def _describe_change(changed: int, deleted: int) -> str:
+    """生成变更描述文本。"""
+    parts = []
+    if changed:
+        parts.append(f"{changed} 个文件变更")
+    if deleted:
+        parts.append(f"{deleted} 个文件删除")
+    return "，".join(parts)
+
+
 def check_changes(game: dict, full_files: dict = None, dirs_info: dict = None,
                   existing: list = None) -> dict:
     """检测存档自最近一次备份以来是否有变化。
@@ -187,16 +204,11 @@ def check_changes(game: dict, full_files: dict = None, dirs_info: dict = None,
     if prev_files == full_files:
         return {"changed": False, "latest": latest["timestamp"], "reason": "存档无变更"}
     # Q3 优化：按哈希差异实际统计变更/删除文件数（而非数量差值，避免"改1删1"误报为0）
-    changed = sum(1 for rel, h in full_files.items() if prev_files.get(rel) != h)
-    deleted = sum(1 for rel in prev_files if rel not in full_files)
+    changed, deleted = _diff_file_lists(full_files, prev_files)
     if not changed and not deleted:
         return {"changed": False, "latest": latest["timestamp"], "reason": "存档无变更"}
-    parts = []
-    if changed:
-        parts.append(f"{changed} 个文件变更")
-    if deleted:
-        parts.append(f"{deleted} 个文件删除")
-    return {"changed": True, "latest": latest["timestamp"], "reason": "，".join(parts)}
+    return {"changed": True, "latest": latest["timestamp"],
+            "reason": _describe_change(changed, deleted)}
 
 
 def _collect_stat_snapshot(game: dict) -> dict:
@@ -331,6 +343,26 @@ def _create_full_backup(game: dict, ts: str, full_files: dict, dirs_info: dict, 
     return meta
 
 
+def _compute_incr_changes(prev_files: dict, full_files: dict) -> tuple:
+    """计算增量变更：返回 (changed={rel:hash}, deleted=[rel])。
+
+    changed = 新增或哈希不一致；deleted = 上一版本有但当前没有。
+    """
+    changed = {rel: h for rel, h in full_files.items() if prev_files.get(rel) != h}
+    deleted = [rel for rel in prev_files if rel not in full_files]
+    return changed, deleted
+
+
+def _copy_changed_files(changed: dict, existing: list, changes_dir: Path):
+    """把变更文件物理复制到 changes/ 目录（复用 _path_for 定位源）。"""
+    for rel in changed:
+        src_path = _path_for(rel, existing)
+        if src_path and src_path.exists():
+            target = changes_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, target)
+
+
 def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dict,
                        full_files: dict, dirs_info: dict, existing: list, note: str) -> dict:
     """创建增量备份（仅存新增/变更文件 + 删除清单）。
@@ -349,30 +381,8 @@ def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dic
     changes_dir.mkdir(parents=True, exist_ok=True)
 
     prev_files = prev_manifest.get("files", {})
-    changed = {}  # 本次实际复制的文件
-    deleted = []  # 相对 base 删除的文件相对路径
-
-    # 计算 changed 与 deleted
-    for rel, h in full_files.items():
-        if prev_files.get(rel) != h:
-            changed[rel] = h
-    for rel in prev_files:
-        if rel not in full_files:
-            deleted.append(rel)
-
-    # 把变更文件物理复制到 changes/
-    for rel in changed:
-        # rel 形如 "顶层/子/文件"，需要从 existing 中找到这个顶层对应的源
-        top = rel.split("/", 1)[0]
-        src_path = None
-        for pobj in existing:
-            if safe_name(pobj.name) == top:
-                src_path = pobj / (rel[len(top) + 1:] if "/" in rel else "")
-                break
-        if src_path and src_path.exists():
-            target = changes_dir / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_path, target)
+    changed, deleted = _compute_incr_changes(prev_files, full_files)
+    _copy_changed_files(changed, existing, changes_dir)
 
     # 计算 changes 占用大小
     size = dir_size(changes_dir)
@@ -408,21 +418,11 @@ def _create_incr_backup(game: dict, ts: str, prev_manifest: dict, prev_meta: dic
     return meta
 
 
-def _decide_backup_kind(game: dict, mode: str, prev_meta: dict, prev_manifest: dict,
-                       full_files: dict, existing: list) -> str:
-    """决定本次备份类型（full / incr）。
+def _compute_change_ratios(prev_files: dict, full_files: dict, existing: list) -> tuple:
+    """auto 模式：计算变更的文件数比例与大小比例，返回 (ratio_by_files, ratio_by_size)。
 
-    无历史版本（prev 缺失）时强制 full：增量必须有基线，否则首个备份会被
-    创建为 base_version=None 的孤儿增量，导致备份满后清理/恢复失败（缺陷修复）。
+    变更小→增量；变更大→完整重置链。任一比例 > 50% 由调用方升级为 full。
     """
-    if not prev_manifest or not prev_meta:
-        return KIND_FULL
-    if mode == "full":
-        return KIND_FULL
-    if mode == "incr":
-        return KIND_INCR
-    # auto：基于变更文件大小比例 + 文件数比例综合判断（变更小→增量；变更大→完整重置链）
-    prev_files = prev_manifest.get("files", {})
     changed_size = 0
     total_prev_size = max(1, meta_size_of_files(prev_files))
     total_now_size = max(1, meta_size_of_files(full_files))
@@ -440,7 +440,25 @@ def _decide_backup_kind(game: dict, mode: str, prev_meta: dict, prev_manifest: d
     total_files = max(1, len(prev_files))
     ratio_by_files = changed_files_total / total_files
     ratio_by_size = changed_size / max(1, max(total_prev_size, total_now_size))
-    # 任一比例 > 50% 则升级为 full
+    return ratio_by_files, ratio_by_size
+
+
+def _decide_backup_kind(game: dict, mode: str, prev_meta: dict, prev_manifest: dict,
+                       full_files: dict, existing: list) -> str:
+    """决定本次备份类型（full / incr）。
+
+    无历史版本（prev 缺失）时强制 full：增量必须有基线，否则首个备份会被
+    创建为 base_version=None 的孤儿增量，导致备份满后清理/恢复失败（缺陷修复）。
+    """
+    if not prev_manifest or not prev_meta:
+        return KIND_FULL
+    if mode == "full":
+        return KIND_FULL
+    if mode == "incr":
+        return KIND_INCR
+    # auto：基于变更文件大小比例 + 文件数比例综合判断（任一比例 > 50% 则升级为 full）
+    prev_files = prev_manifest.get("files", {})
+    ratio_by_files, ratio_by_size = _compute_change_ratios(prev_files, full_files, existing)
     return KIND_INCR if max(ratio_by_files, ratio_by_size) <= 0.5 else KIND_FULL
 
 
@@ -482,6 +500,111 @@ def find_backup_root_conflicts(game: dict = None) -> list:
     return conflicts
 
 
+def _resolve_backup_mode(mode: str) -> str:
+    """解析备份模式，None 时回退到 settings.backup_mode。"""
+    if mode is None:
+        return store.settings.get("backup_mode", "full")
+    return mode
+
+
+def _check_backup_root_overlap(game: dict):
+    """防循环递归：备份根不能与存档源重叠，重叠时抛 BackupError。
+
+    否则"备份写入 → 触发文件监听 → 再次备份"会无限循环。
+    """
+    conflicts = find_backup_root_conflicts(game)
+    if not conflicts:
+        return
+    c = conflicts[0]
+    raise BackupError(
+        "⚠️ 备份目录与存档源目录存在重叠，已停止备份，防止循环递归。\n"
+        f"存档: {c['save']}\n备份: {c['backup']}\n"
+        "请到「设置」中更换备份位置（不要放在存档所在目录内），"
+        "或将备份目录改到存档目录之外。"
+    )
+
+
+def _try_skip_unchanged(game: dict, game_id: str, force: bool):
+    """无变更快速跳过：stat 快照命中时抛 BackupUnchanged；否则返回走全量哈希。
+
+    Q2 优化：先用 (size, mtime) 快照做快速无变更检测（只 stat 不读盘），
+    与最近备份的 manifest._stat 一致时直接跳过，避免全量 SHA256。
+    快照检测失败不影响主流程（返回继续全量哈希）。
+    """
+    if force:
+        return
+    try:
+        snapshot = _collect_stat_snapshot(game)
+        prev_manifest_tmp = None
+        _vs = list_versions(game_id)
+        if _vs:
+            prev_manifest_tmp = _read_json(
+                version_dir(game_id, _vs[0]["timestamp"]) / MANIFEST_NAME, {})
+        if prev_manifest_tmp and _snapshot_matches(snapshot, prev_manifest_tmp):
+            log.info("存档无变更，跳过备份 [%s] %s", game_id, game.get("name"))
+            raise BackupUnchanged("存档无变更")
+    except BackupUnchanged:
+        raise
+    except Exception:
+        pass  # 快照检测失败不影响主流程，走全量哈希
+
+
+def _make_unique_timestamp(game_id: str) -> str:
+    """生成不冲突的版本时间戳（同秒冲突自动加 _N 后缀）。"""
+    ts = ts_now()
+    base_ts = ts
+    seq = 1
+    while version_dir(game_id, ts).exists():
+        seq += 1
+        ts = f"{base_ts}_{seq}"
+    return ts
+
+
+def _load_latest_version(game_id: str):
+    """加载最新版本作为增量基准，返回 (prev_meta, prev_manifest)。
+
+    base_version 必须以"目录名"为准（恢复前快照等目录名含后缀，
+    而 meta.timestamp 可能不含后缀，会导致增量链指向不存在的目录）。
+    无历史版本时返回 (None, None)。
+    """
+    versions = list_versions(game_id)
+    if not versions:
+        return None, None
+    latest = versions[0]  # 已倒序
+    vdir = version_dir(game_id, latest["timestamp"])
+    prev_meta = _read_json(vdir / META_NAME, {})
+    prev_manifest = _read_json(vdir / MANIFEST_NAME, {})
+    if prev_meta:
+        prev_meta["base_dir"] = latest["timestamp"]
+    return prev_meta, prev_manifest
+
+
+def _create_version(game: dict, game_id: str, ts: str, mode: str,
+                    prev_meta: dict, prev_manifest: dict,
+                    full_files: dict, dirs_info: dict, existing: list, note: str) -> str:
+    """决定类型并实际创建版本（full/incr），失败时清理并抛 BackupError。返回 kind。"""
+    kind = _decide_backup_kind(game, mode, prev_meta, prev_manifest, full_files, existing)
+    try:
+        if kind == KIND_FULL:
+            _create_full_backup(game, ts, full_files, dirs_info, existing, note)
+        else:
+            _create_incr_backup(game, ts, prev_manifest or {"files": {}},
+                                prev_meta or {}, full_files, dirs_info, existing, note)
+    except Exception as e:
+        force_rmtree(version_dir(game_id, ts))
+        log.error("备份失败 [%s]: %s\n%s", game_id, e, traceback.format_exc())
+        raise BackupError(f"备份失败: {e}") from e
+    return kind
+
+
+def _log_missing_version(game_id: str, ts: str):
+    """备份后 load_version 返回 None 时的诊断日志。"""
+    vdir = version_dir(game_id, ts)
+    items = [p.name for p in vdir.iterdir()] if vdir.exists() else "N/A"
+    log.error("备份后 load_version 返回 None [%s] ts=%s vdir=%s exists=%s items=%s",
+              game_id, ts, vdir, vdir.exists(), items)
+
+
 def create_backup(game: dict, note: str = "", mode: str = None, force: bool = False) -> dict:
     """对单个游戏执行一次备份。mode: 'full' / 'incr' / 'auto'，None 时按 settings.backup_mode。
 
@@ -492,85 +615,26 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
         save_paths = [p for p in game.get("save_paths", []) if p]
         if not save_paths:
             raise BackupError("该游戏没有配置存档路径")
-        if mode is None:
-            mode = store.settings.get("backup_mode", "full")
+        mode = _resolve_backup_mode(mode)
+        _check_backup_root_overlap(game)
 
-        # 防循环递归保护：备份根目录不能位于存档源目录内（反之亦然）。
-        # 否则"备份写入 → 触发文件监听 → 再次备份"会无限循环。
-        conflicts = find_backup_root_conflicts(game)
-        if conflicts:
-            c = conflicts[0]
-            raise BackupError(
-                "⚠️ 备份目录与存档源目录存在重叠，已停止备份，防止循环递归。\n"
-                f"存档: {c['save']}\n备份: {c['backup']}\n"
-                "请到「设置」中更换备份位置（不要放在存档所在目录内），"
-                "或将备份目录改到存档目录之外。"
-            )
-
-        # Q2 优化：先用 (size, mtime) 快照做快速无变更检测（只 stat 不读盘），
-        # 与最近备份的 manifest._stat 一致时直接跳过，避免全量 SHA256。
-        # 快照不一致（含旧数据无 _stat）再走全量哈希精确比对。
-        if not force:
-            try:
-                snapshot = _collect_stat_snapshot(game)
-                prev_manifest_tmp = None
-                _vs = list_versions(game_id)
-                if _vs:
-                    prev_manifest_tmp = _read_json(
-                        version_dir(game_id, _vs[0]["timestamp"]) / MANIFEST_NAME, {})
-                if prev_manifest_tmp and _snapshot_matches(snapshot, prev_manifest_tmp):
-                    log.info("存档无变更，跳过备份 [%s] %s", game_id, game.get("name"))
-                    raise BackupUnchanged("存档无变更")
-            except BackupUnchanged:
-                raise
-            except Exception:
-                pass  # 快照检测失败不影响主流程，走全量哈希
-
+        # 无变更跳过：stat 快照 → 全量哈希（两层）
+        _try_skip_unchanged(game, game_id, force)
         full_files, dirs_info, existing = _compute_current_state(game)
         if not full_files:
             raise BackupError("存档目录不存在，无法备份")
-
-        # 无变更检测：非强制时，若与最近备份一致则跳过。
-        # 复用已计算的 full_files，避免对同一存档重复全量 SHA256（Q1 修复）
         if not force:
+            # 复用已计算的 full_files，避免对同一存档重复全量 SHA256（Q1 修复）
             chk = check_changes(game, full_files=full_files,
                                 dirs_info=dirs_info, existing=existing)
             if not chk["changed"]:
                 log.info("存档无变更，跳过备份 [%s] %s", game_id, game.get("name"))
                 raise BackupUnchanged(chk["reason"])
 
-        ts = ts_now()
-        base_ts = ts
-        seq = 1
-        while version_dir(game_id, ts).exists():
-            seq += 1
-            ts = f"{base_ts}_{seq}"
-
-        # 决定 kind：需要找"最新版本"作为增量基准
-        versions = list_versions(game_id)
-        prev_meta = None
-        prev_manifest = None
-        if versions:
-            latest = versions[0]  # 已倒序
-            prev_meta = _read_json(version_dir(game_id, latest["timestamp"]) / META_NAME, {})
-            prev_manifest = _read_json(version_dir(game_id, latest["timestamp"]) / MANIFEST_NAME, {})
-            # 关键：base_version 必须以"目录名"为准（恢复前快照等目录名含后缀，
-            # 而 meta.timestamp 可能不含后缀，会导致增量链指向不存在的目录）
-            if prev_meta:
-                prev_meta["base_dir"] = latest["timestamp"]
-
-        kind = _decide_backup_kind(game, mode, prev_meta, prev_manifest, full_files, existing)
-
-        try:
-            if kind == KIND_FULL:
-                _create_full_backup(game, ts, full_files, dirs_info, existing, note)
-            else:
-                _create_incr_backup(game, ts, prev_manifest or {"files": {}},
-                                    prev_meta or {}, full_files, dirs_info, existing, note)
-        except Exception as e:
-            force_rmtree(version_dir(game_id, ts))
-            log.error("备份失败 [%s]: %s\n%s", game_id, e, traceback.format_exc())
-            raise BackupError(f"备份失败: {e}") from e
+        ts = _make_unique_timestamp(game_id)
+        prev_meta, prev_manifest = _load_latest_version(game_id)
+        kind = _create_version(game, game_id, ts, mode, prev_meta, prev_manifest,
+                               full_files, dirs_info, existing, note)
         _invalidate_versions(game_id)  # 新备份后缓存失效
 
         try:
@@ -584,10 +648,7 @@ def create_backup(game: dict, note: str = "", mode: str = None, force: bool = Fa
         log.info("备份完成 [%s] %s kind=%s -> %s", game_id, game.get("name"), kind, ts)
         v = load_version(game_id, ts)
         if v is None:
-            vdir = version_dir(game_id, ts)
-            log.error("备份后 load_version 返回 None [%s] ts=%s vdir=%s exists=%s items=%s",
-                      game_id, ts, vdir, vdir.exists(),
-                      [p.name for p in vdir.iterdir()] if vdir.exists() else "N/A")
+            _log_missing_version(game_id, ts)
         return v
 
 
@@ -692,6 +753,11 @@ def promote_to_full(game_id: str, ts: str):
         raise BackupError(f"版本 {ts} 不存在")
     if meta.get("kind") == KIND_FULL:
         return
+    # 记录原始目录 mtime：promote 会重写目录内容（重建 full、移动文件、
+    # 写回 meta/manifest），这些写操作会刷新 vdir 的 mtime，进而破坏
+    # list_versions 基于 mtime 的倒序排序（将本应较旧的被提升版本误判为最新）。
+    # promote 只是"逻辑升级"，不改变版本的逻辑创建顺序，故操作后恢复原始 mtime。
+    orig_mtime_ns = vdir.stat().st_mtime_ns
     # 重建到临时目录（版本目录外，删除版本时不受影响）
     tmp = game_backup_dir(game_id) / f".promote_{ts}"
     force_rmtree(tmp)
@@ -729,6 +795,12 @@ def promote_to_full(game_id: str, ts: str):
     manifest["deleted"] = []
     _write_json(vdir / MANIFEST_NAME, manifest)
 
+    # 恢复目录 mtime，避免刷新后的 mtime 破坏 list_versions 基于 mtime 的倒序排序
+    try:
+        os.utime(vdir, ns=(orig_mtime_ns, orig_mtime_ns))
+    except OSError as e:
+        log.warning("promote 恢复目录 mtime 失败(忽略): %s", e)
+
 
 def set_favorite(game_id: str, ts: str, fav: bool) -> dict:
     vdir = version_dir(game_id, ts)
@@ -764,6 +836,18 @@ def delete_version(game_id: str, ts: str, force: bool = False) -> bool:
     return True
 
 
+def _select_versions_to_delete(versions: list, keep, exclude: str) -> tuple:
+    """从版本列表选择待删除版本（保留最近 keep 个非收藏 + 全部收藏，排除 exclude）。
+
+    返回 (to_delete, kept_non_favorite)。
+    """
+    kept = [v for v in versions if not v.get("favorite")]
+    to_delete = kept[keep:] if keep is not None else []
+    if exclude:
+        to_delete = [v for v in to_delete if v["timestamp"] != exclude]
+    return to_delete, kept
+
+
 def cleanup_versions(game_id: str, keep: int = None, exclude: str = None) -> dict:
     """清理过期版本：保留最近 keep 个非收藏 + 全部收藏。
 
@@ -774,11 +858,7 @@ def cleanup_versions(game_id: str, keep: int = None, exclude: str = None) -> dic
         keep = store.settings.get("keep_versions", 5)
     versions = list_versions(game_id)
     favorites = [v for v in versions if v.get("favorite")]
-    kept = [v for v in versions if not v.get("favorite")]
-    # 计算待删：保留最近 keep 个非收藏（exclude 不占名额，仅防止被误删）
-    to_delete = kept[keep:] if keep is not None else []
-    if exclude:
-        to_delete = [v for v in to_delete if v["timestamp"] != exclude]
+    to_delete, kept = _select_versions_to_delete(versions, keep, exclude)
     deleted = []
     # 从最旧开始删，确保链处理顺序正确
     for v in sorted(to_delete, key=lambda x: x["timestamp"]):
@@ -831,19 +911,12 @@ def _apply_deletions(deleted: list, dest: Path):
                 pass
 
 
-def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
-    """重建指定版本到 dest 目录（沿 base_version 链回溯到 full，再依次应用 incr）。
+def _build_restore_chain(game_id: str, ts: str) -> list:
+    """沿 base_version 链回溯收集版本时间戳，返回 [ts, ..., 根]。
 
-    兼容历史缺陷产生的"孤儿增量根"：首个备份即 incr 且 base_version=None，
-    此时其 changes/ 为全量（创建时 prev 清单为空），可安全作为链根。
-    返回 dest 路径。用于恢复和校验。
+    根是 full 或"孤儿增量根"（incr 但无基线目录，且 changes 为全量）。
+    兼容历史缺陷：首个备份即 incr 且 base_version=None，changes/ 为全量可作链根。
     """
-    dest = Path(dest)
-    if dest.exists():
-        force_rmtree(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-
-    # 收集链：从 ts 沿 base_version 回溯到最老的 base，再正向应用
     chain = []
     cur_ts = ts
     seen = set()
@@ -868,8 +941,11 @@ def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
                 break
             raise BackupError(f"增量基线 {base} 缺失，无法重建")
         cur_ts = base
+    return chain
 
-    # chain 顺序：[ts, ..., 根]；根是 full 或"全量孤儿增量"
+
+def _apply_restore_chain(game_id: str, chain: list, dest: Path):
+    """把重建链应用到 dest：根展开 + 中间 incr 依次应用 changes/deleted。"""
     root_ts = chain[-1]
     root_vdir = version_dir(game_id, root_ts)
     root_meta = _read_json(root_vdir / META_NAME, {})
@@ -885,10 +961,94 @@ def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
         _materialize_changes(vdir / CHANGES_DIR_NAME, dest)
         deleted = _read_json(vdir / DELETED_NAME, [])
         _apply_deletions(deleted, dest)
+
+
+def reconstruct(game_id: str, ts: str, dest: Path) -> Path:
+    """重建指定版本到 dest 目录（沿 base_version 链回溯到 full，再依次应用 incr）。
+
+    兼容历史缺陷产生的"孤儿增量根"：首个备份即 incr 且 base_version=None，
+    此时其 changes/ 为全量（创建时 prev 清单为空），可安全作为链根。
+    返回 dest 路径。用于恢复和校验。
+    """
+    dest = Path(dest)
+    if dest.exists():
+        force_rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    chain = _build_restore_chain(game_id, ts)
+    _apply_restore_chain(game_id, chain, dest)
     return dest
 
 
 # ---------------- 恢复 ----------------
+
+def _build_safety_snapshot(game: dict, game_id: str, v: dict):
+    """创建恢复前安全快照，返回 (rollback_dir, safety_ts)。失败时清理并抛 BackupError。"""
+    safety_ts = ts_now()
+    rollback_dir = version_dir(game_id, safety_ts + "_pre_restore")
+    try:
+        rb_data = rollback_dir / DATA_DIR_NAME
+        rb_data.mkdir(parents=True, exist_ok=True)
+        existing = [expand_env_path(p) for p in
+                    v.get("source_paths", game.get("save_paths", []))
+                    if expand_env_path(p).exists()]
+        manifest = {"files": {}, "dirs": {}}
+        for pobj in existing:
+            key = safe_name(pobj.name)
+            if pobj.is_dir():
+                _copy_tree(pobj, rb_data / key)
+                for rel in _collect_files(rb_data / key):
+                    manifest["files"][f"{key}/{rel}"] = sha256_file(rb_data / key / rel)
+            else:
+                shutil.copy2(pobj, rb_data / key)
+                manifest["files"][key] = sha256_file(rb_data / key)
+        _write_json(rollback_dir / MANIFEST_NAME, manifest)
+        rollback_meta = {
+            "kind": KIND_FULL, "base_version": None,
+            "game_id": game_id, "game_name": game.get("name", ""),
+            "timestamp": safety_ts, "created": datetime.now().isoformat(timespec="seconds"),
+            "note": "恢复前自动快照", "status": "ok", "verified": False,
+            "favorite": False, "compress": "none",
+            "source_paths": [str(p) for p in existing],
+            "size": dir_size(rb_data),
+        }
+        _write_json(rollback_dir / META_NAME, rollback_meta)
+        return rollback_dir, safety_ts
+    except Exception as e:
+        force_rmtree(rollback_dir)
+        log.error("创建恢复前快照失败，中止恢复: %s", e)
+        raise BackupError(f"创建恢复前快照失败，已中止恢复: {e}") from e
+
+
+def _apply_reconstruct_to_targets(tmp: Path, target_paths: list) -> list:
+    """把重建目录内容覆盖应用到各存档目标路径，返回已替换路径列表。"""
+    replaced = []
+    for target in target_paths:
+        t = expand_env_path(target)
+        src_name = safe_name(Path(target).name)
+        src = tmp / src_name
+        if not src.exists():
+            continue
+        t.parent.mkdir(parents=True, exist_ok=True)
+        _merge_copy(src, t)
+        removed = []
+        _prune_extra(src, t, removed)
+        replaced.append(str(t))
+    return replaced
+
+
+def _rollback_from_snapshot(rollback_dir: Path):
+    """从安全快照回滚到各原始存档路径。"""
+    rb_data = rollback_dir / DATA_DIR_NAME
+    rb_meta = _read_json(rollback_dir / META_NAME, {})
+    for p in rb_meta.get("source_paths", []):
+        t = expand_env_path(p)
+        key = safe_name(t.name)
+        src = rb_data / key
+        if src.exists():
+            _merge_copy(src, t)
+            removed = []
+            _prune_extra(src, t, removed)
+
 
 def restore_backup(game: dict, ts: str, safety_backup: bool = True) -> dict:
     """恢复指定版本。防呆：游戏运行中拒绝；恢复前自动快照；失败自动回滚。"""
@@ -907,59 +1067,15 @@ def restore_backup(game: dict, ts: str, safety_backup: bool = True) -> dict:
         rollback_dir = None
         safety_ts = None
         if safety_backup:
-            try:
-                safety_ts = ts_now()
-                rollback_dir = version_dir(game_id, safety_ts + "_pre_restore")
-                rb_data = rollback_dir / DATA_DIR_NAME
-                rb_data.mkdir(parents=True, exist_ok=True)
-                existing = [expand_env_path(p) for p in
-                            v.get("source_paths", game.get("save_paths", []))
-                            if expand_env_path(p).exists()]
-                manifest = {"files": {}, "dirs": {}}
-                for pobj in existing:
-                    key = safe_name(pobj.name)
-                    if pobj.is_dir():
-                        _copy_tree(pobj, rb_data / key)
-                        for rel in _collect_files(rb_data / key):
-                            manifest["files"][f"{key}/{rel}"] = sha256_file(rb_data / key / rel)
-                    else:
-                        shutil.copy2(pobj, rb_data / key)
-                        manifest["files"][key] = sha256_file(rb_data / key)
-                _write_json(rollback_dir / MANIFEST_NAME, manifest)
-                rollback_meta = {
-                    "kind": KIND_FULL, "base_version": None,
-                    "game_id": game_id, "game_name": game.get("name", ""),
-                    "timestamp": safety_ts, "created": datetime.now().isoformat(timespec="seconds"),
-                    "note": "恢复前自动快照", "status": "ok", "verified": False,
-                    "favorite": False, "compress": "none",
-                    "source_paths": [str(p) for p in existing],
-                    "size": dir_size(rb_data),
-                }
-                _write_json(rollback_dir / META_NAME, rollback_meta)
-            except Exception as e:
-                force_rmtree(rollback_dir)
-                log.error("创建恢复前快照失败，中止恢复: %s", e)
-                raise BackupError(f"创建恢复前快照失败，已中止恢复: {e}") from e
+            rollback_dir, safety_ts = _build_safety_snapshot(game, game_id, v)
 
         try:
             tmp = version_dir(game_id, ".restore_tmp")
             force_rmtree(tmp)
             tmp.mkdir(parents=True, exist_ok=True)
             reconstruct(game_id, ts, tmp)
-
             target_paths = v.get("source_paths", game.get("save_paths", []))
-            replaced = []
-            for target in target_paths:
-                t = expand_env_path(target)
-                src_name = safe_name(Path(target).name)
-                src = tmp / src_name
-                if not src.exists():
-                    continue
-                t.parent.mkdir(parents=True, exist_ok=True)
-                _merge_copy(src, t)
-                removed = []
-                _prune_extra(src, t, removed)
-                replaced.append(str(t))
+            replaced = _apply_reconstruct_to_targets(tmp, target_paths)
             force_rmtree(tmp)
             _invalidate_versions(game_id)  # 恢复会创建快照/回滚，缓存失效
             log.info("恢复完成 [%s] %s -> %s", game_id, ts, " | ".join(replaced))
@@ -967,16 +1083,7 @@ def restore_backup(game: dict, ts: str, safety_backup: bool = True) -> dict:
         except Exception as e:
             if rollback_dir and rollback_dir.exists():
                 try:
-                    rb_data = rollback_dir / DATA_DIR_NAME
-                    rb_meta = _read_json(rollback_dir / META_NAME, {})
-                    for p in rb_meta.get("source_paths", []):
-                        t = expand_env_path(p)
-                        key = safe_name(t.name)
-                        src = rb_data / key
-                        if src.exists():
-                            _merge_copy(src, t)
-                            removed = []
-                            _prune_extra(src, t, removed)
+                    _rollback_from_snapshot(rollback_dir)
                     log.warning("恢复失败，已回滚 [%s] %s: %s", game_id, ts, e)
                     raise BackupError(f"恢复失败，已自动回滚。原因: {e}") from e
                 except Exception as rollback_e:

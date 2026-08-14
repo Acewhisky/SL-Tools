@@ -29,6 +29,23 @@ def _steam_userdata_dir() -> Path:
     return None
 
 
+def _scan_steam_appid_remote(steamid: Path, appid_dir: Path) -> dict:
+    """扫描单个 appid 的 remote 目录，有实际内容返回条目 dict，否则 None。"""
+    remote = appid_dir / "remote"
+    if not (remote.exists() and remote.is_dir()):
+        return None
+    files = [f for f in remote.rglob("*") if f.is_file()]
+    if not files:
+        return None
+    return {
+        "name": f"[Steam 云存档] appid={appid_dir.name}",
+        "path": str(remote),
+        "appid": appid_dir.name,
+        "steamid": steamid.name,
+        "mtime": max((ts_mtime(f) for f in files), default=0),
+    }
+
+
 def _steam_remote_saves() -> list:
     """扫描 Steam userdata/<uid>/<appid>/remote 下的存档目录。
 
@@ -45,22 +62,66 @@ def _steam_remote_saves() -> list:
             for appid_dir in steamid.iterdir():
                 if not appid_dir.is_dir():
                     continue
-                remote = appid_dir / "remote"
-                if remote.exists() and remote.is_dir():
-                    # 有实际内容的 remote 才纳入
-                    files = [f for f in remote.rglob("*") if f.is_file()]
-                    if not files:
-                        continue
-                    results.append({
-                        "name": f"[Steam 云存档] appid={appid_dir.name}",
-                        "path": str(remote),
-                        "appid": appid_dir.name,
-                        "steamid": steamid.name,
-                        "mtime": max((ts_mtime(f) for f in files), default=0),
-                    })
+                entry = _scan_steam_appid_remote(steamid, appid_dir)
+                if entry:
+                    results.append(entry)
     except Exception as e:
         log.warning("扫描 Steam userdata 失败: %s", e)
     return results
+
+
+def _scan_builtin_rules(rules: dict) -> tuple:
+    """扫描内置规则，返回 (found, missing)。存真实路径（便于前端判断与备份）。"""
+    found, missing = [], []
+    for name, rule in rules.items():
+        paths = rule.get("paths", [])
+        existed = [str(expand_env_path(p)) for p in paths if expand_env_path(p).exists()]
+        item = {
+            "name": name,
+            "platform": rule.get("platform", []),
+            # 存在则用实际存在路径，否则保留模板供用户查看
+            "save_paths": existed if existed else paths,
+            "processes": rule.get("processes", []),
+            "detected": bool(existed),
+            "source": "builtin",
+        }
+        (found if existed else missing).append(item)
+    return found, missing
+
+
+def _build_custom_games() -> list:
+    """构建用户自定义游戏列表。"""
+    custom = []
+    for g in store.games:
+        save_paths = g.get("save_paths", [])
+        custom.append({
+            "name": g.get("name", ""),
+            "platform": g.get("platform", ["Other"]),
+            "save_paths": save_paths,
+            "processes": g.get("processes", []),
+            "detected": any(Path(p).exists() for p in save_paths),
+            "source": "custom",
+            "id": g.get("id"),
+        })
+    return custom
+
+
+def _merge_online_found(found: list, custom: list) -> int:
+    """联网增强：合并 Ludusavi 扫描结果（去重已存在游戏名），返回新增数量。"""
+    try:
+        from . import ludusavi_rules
+        luda_found = ludusavi_rules.scan_local()
+    except Exception as e:
+        log.warning("联网增强扫描失败（忽略）: %s", e)
+        return 0
+    existing_names = {g["name"] for g in found} | {g["name"] for g in custom}
+    added = 0
+    for item in luda_found:
+        if item["name"] not in existing_names:
+            found.append(item)
+            added += 1
+    log.info("联网增强扫描: 新增 %d 个游戏", added)
+    return added
 
 
 def scan_games(online: bool = True) -> dict:
@@ -77,57 +138,12 @@ def scan_games(online: bool = True) -> dict:
     }
     """
     rules = get_rules()
-    found, missing = [], []
-
-    for name, rule in rules.items():
-        platforms = rule.get("platform", [])
-        paths = rule.get("paths", [])
-        processes = rule.get("processes", [])
-        # 展开路径，收集真实存在的路径（存真实路径而非模板，便于前端判断与备份）
-        existed = []
-        for p in paths:
-            expanded = expand_env_path(p)
-            if expanded.exists():
-                existed.append(str(expanded))
-        item = {
-            "name": name,
-            "platform": platforms,
-            "save_paths": existed if existed else paths,  # 存在则用实际存在路径，否则保留模板供用户查看
-            "processes": processes,
-            "detected": bool(existed),
-            "source": "builtin",
-        }
-        if existed:
-            found.append(item)
-        else:
-            missing.append(item)
-
-    # 已存在用户自定义游戏（合并更新）
-    custom = []
-    for g in store.games:
-        custom.append({
-            "name": g.get("name", ""),
-            "platform": g.get("platform", ["Other"]),
-            "save_paths": g.get("save_paths", []),
-            "processes": g.get("processes", []),
-            "detected": any(Path(p).exists() for p in g.get("save_paths", [])),
-            "source": "custom",
-            "id": g.get("id"),
-        })
+    found, missing = _scan_builtin_rules(rules)
+    custom = _build_custom_games()
 
     # 联网增强扫描（Ludusavi 规则库）：仅在线时生效，失败自动降级
     if online and store.settings.get("scan_online", True):
-        try:
-            from . import ludusavi_rules
-            luda_found = ludusavi_rules.scan_local()
-            # 去重：已存在的游戏名不重复加入
-            existing_names = {g["name"] for g in found} | {g["name"] for g in custom}
-            for item in luda_found:
-                if item["name"] not in existing_names:
-                    found.append(item)
-            log.info("联网增强扫描: 新增 %d 个游戏", len([i for i in luda_found if i["name"] not in existing_names]))
-        except Exception as e:
-            log.warning("联网增强扫描失败（忽略）: %s", e)
+        _merge_online_found(found, custom)
 
     steam_remote = _steam_remote_saves()
 
@@ -139,14 +155,9 @@ def scan_games(online: bool = True) -> dict:
     }
 
 
-def sync_builtin_to_store(online: bool = True) -> dict:
-    """把内置规则中「检测到」的游戏写入 games.json（幂等），返回新增列表。"""
-    result = scan_games(online=online)
+def _add_builtin_games(result: dict, existing_ids: set, existing_names: set) -> list:
+    """把内置检测到的游戏（含 ludusavi 联网增强）写入 store，返回新增列表。"""
     added = []
-    existing_ids = {g.get("id") for g in store.games}
-    existing_names = {g.get("name") for g in store.games}
-
-    # 内置检测到的（含 ludusavi 联网增强）
     for item in result["found"]:
         if item["name"] in existing_names:
             continue
@@ -168,9 +179,13 @@ def sync_builtin_to_store(online: bool = True) -> dict:
         existing_ids.add(g["id"])
         existing_names.add(item["name"])
         added.append(g)
+    return added
 
-    # Steam 云存档条目（以 steamid+appid 命名去重）
+
+def _add_steam_games(result: dict) -> list:
+    """把 Steam 云存档条目写入 store（以 steamid+appid 命名去重），返回新增列表。"""
     steam_ids = {g.get("id") for g in store.games if g.get("source") == "steam"}
+    added = []
     for sr in result["steam_remote"]:
         gid = f"steam_{sr['steamid']}_{sr['appid']}"
         if gid in steam_ids:
@@ -187,6 +202,17 @@ def sync_builtin_to_store(online: bool = True) -> dict:
         }
         store.upsert_game(g)
         added.append(g)
+    return added
+
+
+def sync_builtin_to_store(online: bool = True) -> dict:
+    """把内置规则中「检测到」的游戏写入 games.json（幂等），返回新增列表。"""
+    result = scan_games(online=online)
+    existing_ids = {g.get("id") for g in store.games}
+    existing_names = {g.get("name") for g in store.games}
+
+    added = _add_builtin_games(result, existing_ids, existing_names)
+    added += _add_steam_games(result)
 
     # 日志输出新增游戏具体名称（方便用户确认扫描结果）
     added_names = [g.get("name", "") for g in added]

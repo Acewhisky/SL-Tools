@@ -23,7 +23,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
 
       - name: Syntax check (Python)
         run: |
@@ -63,6 +63,18 @@ jobs:
         env:
           SAVEMGR_TEST_ROOT: ${{ github.workspace }}
         run: python tests/qa_regression_incr.py
+
+      - name: Run refactor_dev supplementary suite (unit-level, no service)
+        if: always()
+        env:
+          SAVEMGR_TEST_ROOT: ${{ github.workspace }}
+        run: python tests/qa_refactor_dev.py
+
+      - name: Run incremental cleanup regression (pytest, no service)
+        if: always()
+        env:
+          SAVEMGR_TEST_ROOT: ${{ github.workspace }}
+        run: python -m pytest tests/test_incr_cleanup_regression.py -v
 
       - name: Show service log (always, for debugging)
         if: always()

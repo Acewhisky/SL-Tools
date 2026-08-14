@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>复杂度重构报告 - refactor_dev 分支</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #f7f8fa; color: #1f2329; padding: 32px; line-height: 1.6; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .sub { color: #646a73; font-size: 14px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
+  .card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 18px; }
+  .card .label { font-size: 13px; color: #646a73; margin-bottom: 6px; }
+  .card .val { font-size: 24px; font-weight: 600; }
+  .card .delta { font-size: 12px; margin-top: 4px; }
+  .good { color: #00a874; }
+  .bad { color: #e54545; }
+  h2 { font-size: 18px; margin: 28px 0 12px; border-left: 4px solid #3370ff; padding-left: 10px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden;
+          border: 1px solid #e5e6eb; font-size: 13px; }
+  th { background: #f5f6f7; text-align: left; padding: 10px 12px; font-weight: 600; color: #646a73; }
+  td { padding: 9px 12px; border-top: 1px solid #f0f1f2; }
+  .bar { display: inline-block; height: 14px; border-radius: 3px; vertical-align: middle; }
+  .bar-before { background: #e54545; }
+  .bar-after { background: #00a874; }
+  .cc { display: inline-block; width: 28px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .thresh { color: #e54545; font-weight: 600; }
+  .ok { color: #00a874; font-weight: 600; }
+  .note { background: #fffbe6; border: 1px solid #ffe58f; border-radius: 8px; padding: 14px 16px; font-size: 13px; margin-top: 12px; }
+  .note strong { color: #d48806; }
+  ul { margin: 8px 0 0 18px; font-size: 13px; }
+  li { margin: 4px 0; }
+  code { background: #f0f1f2; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>复杂度重构报告</h1>
+  <div class="sub">分支 refactor_dev（基于 main @ 7d72ccf）· commit e0a5a35 · 2026-08-14 · refactor-method-complexity-reduce skill</div>
+
+  <div class="cards">
+    <div class="card"><div class="label">CC&gt;10 方法数</div><div class="val">20 → <span class="good">0</span></div><div class="delta good">全部清零</div></div>
+    <div class="card"><div class="label">D 级方法数（CC&gt;15）</div><div class="val">1 → <span class="good">0</span></div><div class="delta good">归零</div></div>
+    <div class="card"><div class="label">平均圈复杂度</div><div class="val">5.37 → <span class="good">4.19</span></div><div class="delta good">-22%</div></div>
+    <div class="card"><div class="label">测试</div><div class="val"><span class="good">37</span>/0</div><div class="delta">回归 12+15 + smoke 25 → 全通过</div></div>
+  </div>
+
+  <h2>重构前后对比（20 个方法）</h2>
+  <table>
+    <thead><tr><th>文件</th><th>方法</th><th style="width:42%">前 → 后（红=重构前，绿=重构后，虚线=阈值 10）</th></tr></thead>
+    <tbody>
+      <tr><td>backup.py</td><td>create_backup</td><td><span class="cc thresh">26</span> <span class="bar bar-before" style="width:130px"></span> → <span class="bar bar-after" style="width:45px"></span> <span class="cc ok">9</span></td></tr>
+      <tr><td>backup.py</td><td>restore_backup</td><td><span class="cc thresh">20</span> <span class="bar bar-before" style="width:100px"></span> → <span class="bar bar-after" style="width:45px"></span> <span class="cc ok">9</span></td></tr>
+      <tr><td>ludusavi_rules.py</td><td>_scan_fast</td><td><span class="cc thresh">19</span> <span class="bar bar-before" style="width:95px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+      <tr><td>app.py</td><td>update_game</td><td><span class="cc thresh">18</span> <span class="bar bar-before" style="width:90px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+      <tr><td>detector.py</td><td>scan_games</td><td><span class="cc thresh">17</span> <span class="bar bar-before" style="width:85px"></span> → <span class="bar bar-after" style="width:10px"></span> <span class="cc ok">2</span></td></tr>
+      <tr><td>app.py</td><td>import_config</td><td><span class="cc thresh">16</span> <span class="bar bar-before" style="width:80px"></span> → <span class="bar bar-after" style="width:15px"></span> <span class="cc ok">3</span></td></tr>
+      <tr><td>ludusavi_rules.py</td><td>download_manifest</td><td><span class="cc thresh">16</span> <span class="bar bar-before" style="width:80px"></span> → <span class="bar bar-after" style="width:30px"></span> <span class="cc ok">6</span></td></tr>
+      <tr><td>automation.py</td><td>sync_watchers</td><td><span class="cc thresh">15</span> <span class="bar bar-before" style="width:75px"></span> → <span class="bar bar-after" style="width:2px"></span> <span class="cc ok">0</span></td></tr>
+      <tr><td>backup.py</td><td>_create_incr_backup</td><td><span class="cc thresh">15</span> <span class="bar bar-before" style="width:75px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+      <tr><td>backup.py</td><td>_decide_backup_kind</td><td><span class="cc thresh">15</span> <span class="bar bar-before" style="width:75px"></span> → <span class="bar bar-after" style="width:25px"></span> <span class="cc ok">5</span></td></tr>
+      <tr><td>ludusavi_rules.py</td><td>_parse_manifest_fast</td><td><span class="cc thresh">15</span> <span class="bar bar-before" style="width:75px"></span> → <span class="bar bar-after" style="width:50px"></span> <span class="cc ok">10</span></td></tr>
+      <tr><td>app.py</td><td>add_game</td><td><span class="cc thresh">14</span> <span class="bar bar-before" style="width:70px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+      <tr><td>backup.py</td><td>check_changes</td><td><span class="cc thresh">14</span> <span class="bar bar-before" style="width:70px"></span> → <span class="bar bar-after" style="width:35px"></span> <span class="cc ok">7</span></td></tr>
+      <tr><td>backup.py</td><td>cleanup_versions</td><td><span class="cc thresh">14</span> <span class="bar bar-before" style="width:70px"></span> → <span class="bar bar-after" style="width:30px"></span> <span class="cc ok">6</span></td></tr>
+      <tr><td>detector.py</td><td>_steam_remote_saves</td><td><span class="cc thresh">14</span> <span class="bar bar-before" style="width:70px"></span> → <span class="bar bar-after" style="width:45px"></span> <span class="cc ok">9</span></td></tr>
+      <tr><td>detector.py</td><td>sync_builtin_to_store</td><td><span class="cc thresh">13</span> <span class="bar bar-before" style="width:65px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+      <tr><td>service.py</td><td>backup_all</td><td><span class="cc thresh">12</span> <span class="bar bar-before" style="width:60px"></span> → <span class="bar bar-after" style="width:10px"></span> <span class="cc ok">2</span></td></tr>
+      <tr><td>steam_search.py</td><td>match_icons</td><td><span class="cc thresh">12</span> <span class="bar bar-before" style="width:60px"></span> → <span class="bar bar-after" style="width:30px"></span> <span class="cc ok">6</span></td></tr>
+      <tr><td>app.py</td><td>open_in_explorer</td><td><span class="cc thresh">11</span> <span class="bar bar-before" style="width:55px"></span> → <span class="bar bar-after" style="width:10px"></span> <span class="cc ok">2</span></td></tr>
+      <tr><td>backup.py</td><td>reconstruct</td><td><span class="cc thresh">11</span> <span class="bar bar-before" style="width:55px"></span> → <span class="bar bar-after" style="width:5px"></span> <span class="cc ok">1</span></td></tr>
+    </tbody>
+  </table>
+  <div style="font-size:12px;color:#646a73;margin-top:8px;">条形长度按 CC 等比（5px/单位）；绿色条均落在阈值 10 以内。</div>
+
+  <h2>重构策略</h2>
+  <ul>
+    <li><strong>提取聚焦辅助方法</strong>：每个辅助方法单一职责（校验 / 计算 / 分派 / IO），主方法读起来像高层流程。共提取约 40 个。</li>
+    <li><strong>卫语句降嵌套</strong>：把 <code>if not x: return</code> 前置，消除深层 if-else 嵌套（如 create_backup、open_in_explorer）。</li>
+    <li><strong>去重</strong>：backup._copy_changed_files 复用已有 _path_for；app._clean_str_list 供 add_game/update_game 共用。</li>
+    <li><strong>字段映射表</strong>：app.update_game 的 8 个字段分支改为按类型分组循环（str/list/bool），消除重复 if 链。</li>
+    <li><strong>保持功能完全不变</strong>：相同 IO 行为、相同异常类型与消息、相同校验顺序。</li>
+  </ul>
+
+  <h2>验证</h2>
+  <ul>
+    <li><code>qa_regression_incr.py</code>：12 通过 / 0 失败（backup 增量清理回归，数据隔离 Temp）</li>
+    <li><code>test_incr_cleanup_regression.py</code>：通过（孤儿增量根回归）</li>
+    <li>app.py 辅助函数 smoke test：25 通过 / 0 失败（验证 update_game/add_game/import_config/open_in_explorer 提取逻辑等价）</li>
+    <li>全部模块导入正常（含 <code>import app</code>），无语法错误</li>
+    <li>每文件改完即跑语法 + 复杂度复测 + 回归测试，增量验证无回归</li>
+  </ul>
+
+  <div class="note">
+    <strong>工具教训（已记入项目记忆）：</strong>Windows Git Bash 下 <code>radon cc &lt;file&gt; &gt; out</code> 或 <code>| head</code> 会把 stdout 覆盖到作为输入参数的源文件（app.py 两次被破坏成 radon 输出）。本次改用 radon Python API（<code>cc_visit</code>）在进程内分析，零副作用。后续本项目复杂度分析一律用 API。
+  </div>
+</div>
+</body>
+</html>
