@@ -39,6 +39,16 @@ async function api(method, path, body) {
   return j.data;
 }
 
+async function waitForNewVersion(gid, baseTs, desc, timeout = TIMEOUT_MS) {
+  // 版本列表最多保留 keep_versions 个：新备份会"清理最老 + 新增最新"，
+  // 版本总数可能不变，因此用"最新时间戳发生变化"判断，而非版本数增加。
+  await waitFor(desc, async () => {
+    const versions = await api("GET", `/api/games/${gid}/versions`);
+    const latest = versions[0] && versions[0].timestamp;
+    return latest !== undefined && latest !== baseTs;
+  }, timeout);
+}
+
 (async () => {
   const browser = await puppeteer.launch({
     executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -108,13 +118,11 @@ async function api(method, path, body) {
 
   // ---- 5. 修改存档 → 自动备份（事件监听）----
   console.log("\n步骤 5: 修改存档触发自动备份");
-  const v0 = (await api("GET", `/api/games/${g.id}/versions`)).length;  // 基线版本数
+  const v0 = (await api("GET", `/api/games/${g.id}/versions`));
+  const base0 = v0[0] && v0[0].timestamp;  // 基线：最新版本时间戳
   fs.writeFileSync(path.join(SAVE_DIR, "slot1.sav"), "seed v2 " + Date.now());
-  // 防抖 8s + 备份耗时，等待版本数相对基线增加
-  await waitFor("自动备份完成（版本数增加）", async () => {
-    const v = await api("GET", `/api/games/${g.id}/versions`);
-    return v.length > v0;
-  }, 30000);
+  // 防抖 8s + 备份耗时，等待出现新版本（总数可能因保留上限不变）
+  await waitForNewVersion(g.id, base0, "自动备份完成（出现新版本）", 30000);
   check("自动备份已触发并生成新版本", true);
 
   // ---- 6. 前端实时刷新检查 ----
@@ -135,16 +143,14 @@ async function api(method, path, body) {
   check("前端数字自动刷新", true);
 
   // ---- 7. 替换存档（新增文件）→ 自动备份 ----
-  // 注意：防抖会合并短时间内的多次写入为一次备份，因此这里等待"版本数继续增加"
-  //（相对步骤 5 基线 +1，而非绝对数），并确保与步骤 6 的写入间隔超过防抖窗口。
+  // 防抖会合并短时间内的多次写入为一次备份，因此写入前确保超过防抖窗口；
+  // 断言用"最新版本时间戳变化"（见 waitForNewVersion），而非版本数增加。
   console.log("\n步骤 7: 替换存档（新增 slot2 文件）");
   await new Promise(r => setTimeout(r, 10000));  // 等待步骤 6 的防抖窗口结束
-  const v1 = (await api("GET", `/api/games/${g.id}/versions`)).length;
+  const v1 = (await api("GET", `/api/games/${g.id}/versions`));
+  const base1 = v1[0] && v1[0].timestamp;
   fs.writeFileSync(path.join(SAVE_DIR, "slot2.sav"), "new save " + Date.now());
-  await waitFor("新增文件触发自动备份", async () => {
-    const v = await api("GET", `/api/games/${g.id}/versions`);
-    return v.length > v1;
-  }, 30000);
+  await waitForNewVersion(g.id, base1, "新增文件触发自动备份", 30000);
   check("替换存档触发自动备份", true);
 
   // ---- 8. 手动备份按钮 ----

@@ -50,6 +50,23 @@ def file_hash(p):
     import hashlib
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
+def backup_root():
+    """备份根目录：优先环境变量，其次向服务查询，最后回退源码默认。
+
+    exe 包下数据目录位于 exe 同级（如 dist/data），并非源码根，硬编码
+    <项目根>/data/backups 会让测试在打包环境中失效。
+    """
+    env_root = os.environ.get("SAVEMGR_TEST_BACKUP_ROOT")
+    if env_root:
+        return Path(env_root)
+    try:
+        root = (req("GET", "/api/settings").get("data") or {}).get("backup_root")
+        if root:
+            return Path(root)
+    except Exception:
+        pass
+    return PROJECT_ROOT / "data" / "backups"
+
 def rebuild_test_save():
     """重建干净的测试存档目录（清理上一轮残留，使用底层删除绕过回收站钩子）。"""
     if TEST_SAVE.exists():
@@ -102,8 +119,8 @@ check("校验通过", r.get("ok") and r.get("data", {}).get("ok"), r)
 print(f"  校验结果: checked={r['data'].get('checked')} mismatched={r['data'].get('mismatched')}")
 
 print("\n步骤 5: 记录备份前后哈希对比（验收标准：替换前后哈希一致）")
-# 备份版本1中所有文件的实际哈希（备份根目录默认为 <项目根>/data/backups）
-vdir = (PROJECT_ROOT / "data" / "backups") / gid / ts1 / "data"
+# 备份版本1中所有文件的实际哈希（备份根目录向服务查询，exe 包下不在源码根）
+vdir = backup_root() / gid / ts1 / "data"
 manifest = json.loads((vdir.parent / "manifest.json").read_text(encoding="utf-8"))
 print("  备份清单:")
 for f, h in manifest["files"].items():
