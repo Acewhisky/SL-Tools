@@ -3,7 +3,7 @@
 const puppeteer = require(process.env.PUPPETEER_PATH || "puppeteer-core");
 const fs = require("fs");
 const path = require("path");
-const BASE = "http://127.0.0.1:8890";
+const BASE = process.env.E2E_BASE || "http://127.0.0.1:8890";
 const SAVE = path.join(process.env.TEMP || "/tmp", "qa_verify_fix");
 
 (async () => {

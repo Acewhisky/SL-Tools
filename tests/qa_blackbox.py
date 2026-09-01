@@ -71,6 +71,24 @@ def req(method, path, body=None):
         return {"ok": False, "error": str(e)}
 
 
+def backup_root():
+    """备份根目录：优先环境变量，其次向服务查询，最后回退源码默认。
+
+    exe 包下数据目录位于 exe 同级（如 dist/data），并非源码根，硬编码
+    <项目根>/data 会让测试在打包环境中失效。
+    """
+    env_root = os.environ.get("SAVEMGR_TEST_BACKUP_ROOT")
+    if env_root:
+        return Path(env_root)
+    try:
+        root = (req("GET", "/api/settings").get("data") or {}).get("backup_root")
+        if root:
+            return Path(root)
+    except Exception:
+        pass
+    return DATA_DIR / "backups"
+
+
 def check(case_id, name, cond, detail=""):
     global passed, failed
     results.append((case_id, name, bool(cond), detail))
@@ -433,7 +451,7 @@ def run_module_F():
     r = backup(gid4, {"mode": "incr", "force": True})
     ts_b = r.get("data", {}).get("timestamp")
     # 构造成环：ts_b.base_version = ts_b 自己
-    meta_path = DATA_DIR / "backups" / gid4 / ts_b / "meta.json"
+    meta_path = backup_root() / gid4 / ts_b / "meta.json"
     try:
         m = json.loads(meta_path.read_text(encoding="utf-8"))
         m["base_version"] = ts_b
@@ -458,7 +476,7 @@ def run_module_G():
     check("TC-G-001", "单版本校验通过", r.get("ok") and d.get("ok") is True
           and d.get("checked") == 1, str(d)[:200])
     # G-002 篡改文件 → 异常
-    bdir = DATA_DIR / "backups" / gid / ts / "data"
+    bdir = backup_root() / gid / ts / "data"
     target = next(bdir.rglob("v.sav"), None)
     if target:
         target.write_text("tampered!", encoding="utf-8")

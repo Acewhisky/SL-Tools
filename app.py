@@ -680,6 +680,15 @@ def _find_free_port(preferred: int) -> int:
     return preferred
 
 
+def _on_port_changed(host: str, port: int):
+    """监听 socket 自愈后端口变更时的回调（同步环境变量并提示用户）。"""
+    os.environ["SAVEMGR_PORT"] = str(port)
+    new_url = f"http://{host}:{port}"
+    log.warning("网络环境变化，服务端口已切换为 %s", new_url)
+    print(f"\n[注意] 网络环境变化（如加速器/代理接管了网络栈），服务端口已切换为 {new_url}")
+    print("[注意] 请刷新浏览器或改用上述地址访问。\n")
+
+
 def main():
     port = int(os.environ.get("SAVEMGR_PORT", "8765"))
     host = "127.0.0.1"
@@ -731,8 +740,12 @@ def main():
     # 服务起来后，后台线程做联网增强（Ludusavi + 图标），不阻塞使用
     _spawn_background_online_scan()
 
-    from waitress import serve
-    serve(app, host=host, port=port, threads=8)
+    # 用带自愈能力的封装替代原生 waitress.serve：
+    # 加速器/代理类软件启用时会重建 Winsock LSP 链，使已存在的监听 socket
+    # 句柄失效（accept 持续返回 WinError 10022）。原生 waitress 只记录日志
+    # 不恢复，会陷入忙循环；这里改为失败后自动重建监听 socket。
+    from backend.netserver import serve_robust
+    serve_robust(app, host=host, port=port, threads=8, on_port_change=_on_port_changed)
 
 
 if __name__ == "__main__":
