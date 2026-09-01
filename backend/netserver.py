@@ -80,6 +80,7 @@ class ResilientWSGIServer(TcpWSGIServer):
         self._watchdog_failures = 0
         self._watchdog_stop = threading.Event()
         self._watchdog_thread = None
+        self._trigger_rebuilding = False
         self._on_port_change = None
         self._preferred_port = self._initial_port()
 
@@ -143,7 +144,13 @@ class ResilientWSGIServer(TcpWSGIServer):
     # ---------------- 自愈 ----------------
 
     def _rebuild(self):
-        """重建监听 socket 与唤醒通道。返回是否成功。"""
+        """重建监听 socket 与唤醒通道。返回监听是否成功。
+
+        顺序：先恢复监听 socket，再在后台异步重建唤醒通道。
+        唤醒通道的 connect() 在 LSP 抖动期可能阻塞数十秒（Windows 默认
+        连接超时约 21s/次，多次重试可累积到分钟级），若同步执行会把监听
+        恢复也拖慢（实测 113 秒）。
+        """
         now = time.monotonic()
         if now - self._last_rebuild_at < MIN_REBUILD_INTERVAL:
             return False
@@ -151,14 +158,37 @@ class ResilientWSGIServer(TcpWSGIServer):
         self._rebuild_count += 1
         log.warning("[网络自愈] 监听 socket 失效，开始第 %d 次重建…", self._rebuild_count)
 
-        self._rebuild_trigger(force=True)
         if not self._rebuild_listen_socket():
+            # 监听重建失败：保留占位 socket 等看门狗再救，同时尽力修复唤醒通道
+            self._spawn_trigger_rebuild()
             return False
         log.warning(
             "[网络自愈] 监听已恢复: http://%s:%s",
             self.effective_host, self.effective_port,
         )
+        self._spawn_trigger_rebuild()
         return True
+
+    def _spawn_trigger_rebuild(self):
+        """在后台线程重建唤醒通道（避免阻塞主事件循环）。"""
+        if self._trigger_rebuilding:
+            return
+        self._trigger_rebuilding = True
+        threading.Thread(
+            target=self._trigger_rebuild_worker,
+            daemon=True, name="net-trigger-rebuild",
+        ).start()
+
+    def _trigger_rebuild_worker(self):
+        try:
+            if self._rebuild_trigger(force=True):
+                log.info("[网络自愈] 唤醒通道已重建")
+            else:
+                log.warning("[网络自愈] 唤醒通道重建失败，将随下次触发重试")
+        except Exception:
+            log.exception("[网络自愈] 唤醒通道重建异常")
+        finally:
+            self._trigger_rebuilding = False
 
     def _rebuild_trigger(self, force=False):
         """重建 Windows 下的 loopback 唤醒通道。返回是否成功。"""
@@ -283,16 +313,18 @@ class ResilientWSGIServer(TcpWSGIServer):
     # ---------------- 唤醒通道 ----------------
 
     def pull_trigger(self):
-        """覆写父类：唤醒通道失效时自动重建后重试。"""
-        try:
-            self.trigger.pull_trigger()
-        except OSError as exc:
-            self._log_accept_error(exc, "唤醒通道")
-            if self._rebuild_trigger(force=True):
-                try:
-                    self.trigger.pull_trigger()
-                except OSError as retry_exc:
-                    self._log_accept_error(retry_exc, "唤醒通道（重建后）")
+        """覆写父类：唤醒通道失效时转入后台重建，不阻塞调用线程。
+
+        重建在后台线程进行（connect 可能阻塞数十秒），期间本次唤醒放弃，
+        由后台线程重建完成后自动接管。
+        """
+        if not self._trigger_rebuilding:
+            try:
+                self.trigger.pull_trigger()
+                return
+            except OSError as exc:
+                self._log_accept_error(exc, "唤醒通道")
+        self._spawn_trigger_rebuild()
 
     # ---------------- 看门狗 ----------------
 

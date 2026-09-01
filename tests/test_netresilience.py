@@ -107,6 +107,11 @@ def _wait_until(predicate, timeout=10.0, interval=0.02):
     return False
 
 
+def _wait_trigger_ready(srv, timeout=10.0):
+    """等待后台唤醒通道重建完成（重建期间服务仍可接受连接）。"""
+    return _wait_until(lambda: not srv._trigger_rebuilding, timeout=timeout)
+
+
 def _inject_accept_failures(srv, times):
     """让 srv.accept 抛 WSAEINVAL 若干次后恢复正常，返回 (真实方法, 状态)。"""
     real_accept = srv.accept
@@ -157,6 +162,7 @@ def test_rebuilds_listen_socket_after_accept_failures(server, monkeypatch):
     # 等注入的失败耗尽，accept 恢复真实实现后服务必须可用
     _wait_until(lambda: state["remaining"] == 0, timeout=5)
     srv.accept = real_accept
+    _wait_trigger_ready(srv)  # 等后台唤醒通道重建完成，避免响应回写延迟
     assert server.get() == (200, b"pong")
 
 
@@ -212,6 +218,27 @@ def test_trigger_can_be_rebuilt(server):
     assert server.get() == (200, b"pong")
 
 
+def test_pull_trigger_failure_spawns_background_rebuild(server):
+    """唤醒通道失效时转入后台重建：调用不阻塞、重建后服务可用。"""
+    srv = server.server
+    old_trigger = srv.trigger
+
+    class _BrokenTrigger:
+        def pull_trigger(self):
+            raise OSError(10022, "唤醒通道失效")
+
+    srv.trigger = _BrokenTrigger()
+    started = time.monotonic()
+    srv.pull_trigger()
+    elapsed = time.monotonic() - started
+    assert elapsed < 2, f"pull_trigger 不应同步等待重建（耗时 {elapsed:.2f}s）"
+    assert srv._trigger_rebuilding is True, "应已拉起后台重建"
+
+    assert _wait_trigger_ready(srv, timeout=10), "后台重建应完成"
+    assert srv.trigger is not old_trigger, "后台重建后应换用新的唤醒通道"
+    assert server.get() == (200, b"pong")
+
+
 # ---------------- 看门狗 ----------------
 
 def test_probe_listen_succeeds_when_healthy(server):
@@ -239,6 +266,7 @@ def test_watchdog_rebuilds_after_repeated_probe_failures(server, monkeypatch):
 
     assert srv._rebuild_count >= 1, "连续探活失败后应触发重建"
     assert srv.accepting is True
+    _wait_trigger_ready(srv)  # 等后台唤醒通道重建完成
     assert server.get() == (200, b"pong")
 
 
