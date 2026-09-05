@@ -30,3 +30,4 @@ Thumbs.db
 
 # ===== WorkBuddy 内部（全部忽略，不随仓库公开）=====
 .workbuddy/
+.learnings/

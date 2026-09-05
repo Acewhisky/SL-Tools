@@ -993,7 +993,7 @@ async function pollBackupCounts() {
         if (gid === state.currentId) selectedChanged = true;
       }
     });
-    // 当前选中游戏有新备���：刷新时间线
+    // 当前选中游戏有新备份：刷新时间线
     if (selectedChanged && state.currentId) {
       await loadVersions(state.currentId);
     }
