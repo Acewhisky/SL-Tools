@@ -4,7 +4,7 @@
 
 本地游戏存档备份工具：一键备份 / 恢复（S/L）、版本管理、哈希校验、定时与变化监听自动备份。完全离线运行，不依赖任何云端服务。
 
-当前版本：**v2.2.3**（版本号见 `backend/version.py`，单一来源）
+当前版本：**v2.3.0**（版本号见 `backend/version.py`，单一来源）
 
 ## 开源许可
 
@@ -53,6 +53,16 @@ python app.py
 | 运行日志 | 顶栏「📋 日志」查看操作记录与错误 |
 
 ## 迭代记录
+
+### v2.3.0（2026-10-01）
+本次为安全加固版本，修复静态源码审计（`docs/SECURITY_AUDIT_20260930.md`）发现的问题：
+
+- 🔒 **来源校验**：新增 `before_request` 钩子做两层防护——Host 头必须为回环名（挡 DNS rebinding），写方法（POST/PUT/DELETE/PATCH）的 Origin/Referer 必须来自本机（挡 CSRF）。此前全部 26 个路由无 CSRF token，且业务代码统一用 `get_json(force=True)` 忽略 Content-Type，任意第三方网页可用「简单请求」驱动本服务的写操作；刻意不校验端口（端口会因占用/网络自愈变化），不带 Origin/Referer 的本地客户端照常放行
+- 🔒 **恢复目标基线校验**：新增 `validate_restore_target()`，在 restore 写入前 fail fast，阻止把存档恢复到磁盘根、系统目录、用户目录根、AppData 根与备份库内部——这些位置一旦写入，`_prune_extra` 会递归删掉与该存档无关的内容。采用黑名单而非白名单，避免砸掉用户自定义的合法游戏目录
+- 🔒 **`/api/open` 叠加独立校验**：原路径白名单由 `backup_root`/`save_paths` 自身推导，属「自证式」；现叠加同一套基线，白名单被污染时仍能拦下
+- 🧪 测试：新增 `test_origin_guard.py` 与 `test_restore_target_guard.py`，覆盖跨源写入、域名伪装、DNS rebinding、回环放行集，以及灾难路径拒绝/合法路径不误伤/白名单污染。真实配置核对（3 游戏 / 3 存档路径）零误伤，集成回归 54/54 通过
+
+> 遗留项：`backup_root` 尚缺位置校验、归档解压未校验成员路径（Zip Slip 加固），见审计报告「后续建议」。
 
 ### v2.2.3（2026-09-06）
 - 🐛 修复 `static/js/app.js` 注释中残留的编码损坏字符（U+FFFD）：打包前自检脚本扫出，2026-08-09 那轮清理只扫了 `.py`，前端文件漏网

@@ -1019,8 +1019,88 @@ def _build_safety_snapshot(game: dict, game_id: str, v: dict):
         raise BackupError(f"创建恢复前快照失败，已中止恢复: {e}") from e
 
 
+# restore 的写入目标取自版本元数据 source_paths（缺失则回退 game["save_paths"]），
+# 而这两者都可由上层 API 改写、且上层不做任何路径位置校验。此处补**独立于配置**
+# 的基线校验。
+_SYSTEM_ROOT_NAMES = {
+    "windows", "program files", "program files (x86)", "programdata",
+    "$recycle.bin", "system volume information", "perflogs", "recovery",
+}
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_restore_target(target: Path) -> str:
+    """校验 restore 写入目标是否可接受。通过返回 ""，否则返回禁止原因。
+
+    同时被 `/api/open` 复用（app.py::_resolve_open_target）：那里的白名单是由
+    backup_root / save_paths 推导的「自证式」名单，再叠一层本校验才能形成边界。
+    故本函数实为「写入 / 打开类目标」的通用基线，命名沿用其最初的使用场景。
+
+    刻意**不做白名单**：用户自己的游戏目录是合法且无法穷举的（可能装在任何盘符、
+    任何深度），白名单只会砸掉正常用法。这里反过来只声明「绝不允许落到这些位置」，
+    它们的共同点是「该目录下混有大量与本存档无关的内容」——一旦落下去，
+    `_prune_extra` 就会递归删掉所有不在备份里的东西。
+    """
+    if not target.is_absolute():
+        return f"存档路径必须是绝对路径: {target}"
+    try:
+        resolved = target.resolve()
+    except OSError as e:
+        return f"存档路径无法解析: {target} ({e})"
+
+    rest = [p.lower() for p in resolved.parts[1:]]
+    if not rest:
+        return f"禁止恢复到磁盘根目录: {resolved}"
+    if rest[0] in _SYSTEM_ROOT_NAMES:
+        return f"禁止恢复到系统目录: {resolved}"
+
+    # 用户目录根：桌面/文档/下载都混在这里，prune 会波及整个用户配置区
+    home = Path.home().resolve()
+    if resolved.parent == home.parent:
+        return f"禁止恢复到用户目录根: {resolved}"
+    # AppData 根同理（其下的 Local / LocalLow / Roaming **子目录**才是合法存档位置）
+    try:
+        rel = resolved.relative_to(home)
+    except ValueError:
+        rel = None
+    if rel is not None and len(rel.parts) == 1 and rel.parts[0].lower() == "appdata":
+        return f"禁止恢复到 AppData 根目录: {resolved}"
+
+    # 备份库自身：写进去会连带删掉既有版本（自噬）
+    try:
+        root = Path(store.settings["backup_root"]).resolve()
+    except Exception:
+        root = None
+    if root is not None and _is_within(resolved, root):
+        return f"禁止恢复到备份库内部: {resolved}"
+    return ""
+
+
+def _reject_unsafe_targets(raw_targets: list):
+    """前置校验 restore 写入目标，任一不合法即抛错（fail fast，避免部分写入）。"""
+    if not raw_targets:
+        raise BackupError("版本缺少存档来源路径，无法恢复")
+    reasons = []
+    for raw in raw_targets:
+        reason = validate_restore_target(expand_env_path(raw))
+        if reason:
+            reasons.append(reason)
+    if reasons:
+        log.error("恢复目标被安全策略拒绝: %s", reasons)
+        raise BackupError("恢复目标不安全，已中止：\n  - " + "\n  - ".join(reasons))
+
+
 def _apply_reconstruct_to_targets(tmp: Path, target_paths: list) -> list:
     """把重建目录内容覆盖应用到各存档目标路径，返回已替换路径列表。"""
+    # 纵深防御：即使被本模块以外的调用方直接使用，也先过一遍基线校验
+    _reject_unsafe_targets(target_paths)
     replaced = []
     for target in target_paths:
         t = expand_env_path(target)
@@ -1064,6 +1144,12 @@ def restore_backup(game: dict, ts: str, safety_backup: bool = True) -> dict:
         if is_game_running(game.get("processes", [])):
             raise BackupError("检测到游戏正在运行，请先关闭游戏再执行恢复。")
 
+        # 先校验写入目标再动任何数据：目标路径可被上层 API 改写且不校验位置，
+        # 一旦落错地方，_prune_extra 会删掉大量无关内容。fail fast 优先于
+        # 创建安全快照与版本重建，避免为目标本身就不合法的恢复白做一轮工作。
+        target_paths = v.get("source_paths", game.get("save_paths", []))
+        _reject_unsafe_targets(target_paths)
+
         rollback_dir = None
         safety_ts = None
         if safety_backup:
@@ -1074,7 +1160,6 @@ def restore_backup(game: dict, ts: str, safety_backup: bool = True) -> dict:
             force_rmtree(tmp)
             tmp.mkdir(parents=True, exist_ok=True)
             reconstruct(game_id, ts, tmp)
-            target_paths = v.get("source_paths", game.get("save_paths", []))
             replaced = _apply_reconstruct_to_targets(tmp, target_paths)
             force_rmtree(tmp)
             _invalidate_versions(game_id)  # 恢复会创建快照/回滚，缓存失效

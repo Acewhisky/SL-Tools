@@ -13,6 +13,8 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+from urllib.parse import urlsplit
+
 from flask import Flask, jsonify, request, send_from_directory
 
 from backend.config import store
@@ -111,6 +113,78 @@ def _api_err(msg, code=400):
 def _game_dict(g) -> dict:
     """游戏配置转前端展示结构（委托 service 层）。"""
     return service.game_dict(g)
+
+
+# ---------------- 来源校验（本地服务防跨站 / 防 DNS rebinding） ----------------
+
+# 服务恒绑定回环地址（见 main() 中 host = "127.0.0.1"），因此任何合法请求的主机名
+# 都必须是回环名。刻意不校验端口：端口会在被占用（_find_free_port）或网络自愈
+# （_on_port_changed）时变化，硬编码端口会导致误拒。
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_of(value: str):
+    """从 Host 头或 Origin/Referer URL 中取出主机名，返回小写名或 None。
+
+    兼容 host[:port]、[IPv6]:port、完整 URL 三种形态。
+    """
+    if not value:
+        return None
+    text = value.strip().split(",")[0].strip()  # 畸形多值头只取第一段
+    if not text:
+        return None
+    if "://" in text:
+        try:
+            text = urlsplit(text).hostname or ""
+        except ValueError:
+            return None
+    else:
+        text = text.rsplit("@", 1)[-1]  # 防御性：剥掉 userinfo
+        if text.startswith("["):
+            end = text.find("]")
+            if end == -1:
+                return None
+            text = text[1:end]
+        elif text.count(":") == 1:
+            text = text.rsplit(":", 1)[0]
+        # 其余情况（无冒号，或裸 IPv6）保持原样
+    text = text.strip().lower().rstrip(".")  # 去掉 FQDN 尾点，杜绝 localhost. 绕过
+    return text or None
+
+
+def _is_local_host(value: str) -> bool:
+    host = _host_of(value)
+    return host is not None and host in _LOOPBACK_HOSTS
+
+
+@app.before_request
+def _guard_local_origin():
+    """拒绝非本机来源的请求。两层防护：
+
+    1. **Host 头必须是回环名** —— 阻止 DNS rebinding：攻击者域名解析到 127.0.0.1
+       时 Host 会是攻击者域名，直接拒绝，其后续的「同源」判定随之失效。
+    2. **写方法（POST/PUT/DELETE/PATCH）必须来自本机页面** —— 阻止 CSRF。
+       本服务所有路由都没有 CSRF token，且业务代码统一使用
+       `get_json(force=True)`（忽略 Content-Type），浏览器可以用「简单请求」
+       （text/plain 携带 JSON body）绕过 CORS 预检，因此任意恶意网页都能驱动
+       本服务发起写操作。此处补上来源校验。
+
+    不带 Origin/Referer 的客户端（curl、本机脚本、E2E 测试的 Node fetch、单元
+    测试）视为本机直接调用，放行——与之一致的是这些客户端本就有同等文件权限，
+    不构成信任边界跨越。
+    """
+    if not _is_local_host(request.headers.get("Host", "")):
+        log.warning("拒绝非本机 Host 请求: %s %s host=%r",
+                    request.method, request.path, request.headers.get("Host"))
+        return _api_err("来源校验失败：仅允许通过本机地址访问", 403)
+
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        if source and not _is_local_host(source):
+            log.warning("拒绝跨源写请求: %s %s origin=%r",
+                        request.method, request.path, source)
+            return _api_err("来源校验失败：仅允许从本机页面发起操作", 403)
+    return None
 
 
 # ---------------- 页面 ----------------
@@ -467,6 +541,12 @@ def _resolve_open_target(raw: str):
     except Exception:
         target_resolved = target
     if target_resolved in allowed or target in allowed:
+        # 白名单本身由 backup_root / save_paths 推导，属「自证式」——它们能被 API
+        # 改写，因此单靠它不成边界。再叠一道独立于配置的基线校验
+        # （同 backup.validate_restore_target，restore 写入与此处同标准）。
+        blocked = bk.validate_restore_target(target_resolved)
+        if blocked:
+            return None, blocked
         return target_resolved, None
     return None, "此路径不在允许列表内，仅可打开游戏存档路径与备份目录"
 
