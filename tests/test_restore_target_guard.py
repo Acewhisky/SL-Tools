@@ -158,6 +158,52 @@ def test_open_blocked_even_when_allowlist_is_poisoned(monkeypatch):
     assert err
 
 
+def test_open_allows_backup_root_but_restore_still_rejects_it(monkeypatch, backup_root):
+    """两套语义的分水岭——这条是 CI 曾经红的回归用例，勿删。
+
+    备份库内部对 **restore** 必须禁：写进去 `_prune_extra` 会删掉既有版本（自噬）。
+    但对 **`/api/open`** 必须放行：打开不写不删，而且它就是 UI 上「打开备份目录」
+    用的路径，白名单里本来就有。若两者共用一套校验，这里就会误伤成功能故障。
+    """
+    import app as appmod
+
+    monkeypatch.setattr(appmod, "_allowed_open_paths", lambda: {backup_root})
+    resolved, err = appmod._resolve_open_target(str(backup_root))
+    assert resolved is not None, "打开备份目录被误拒（UI 的「打开备份目录」会失效）"
+    assert err is None
+    # 同一条路径，restore 仍然要拦住
+    assert check(backup_root)
+
+
+@pytest.mark.parametrize("target", [
+    HOME,                       # 用户目录根：打开无风险
+    HOME / "AppData",           # AppData 根
+])
+def test_open_allows_targets_that_only_restore_must_reject(target, monkeypatch):
+    """同上：这几条禁令的理由是 prune 删文件，只约束写入，不约束打开。"""
+    import app as appmod
+
+    monkeypatch.setattr(appmod, "_allowed_open_paths", lambda: {target})
+    if not target.exists():
+        pytest.skip(f"{target} 在本机不存在")
+    resolved, err = appmod._resolve_open_target(str(target))
+    assert resolved is not None and err is None
+    assert check(target), "restore 侧必须仍然拒绝"
+
+
+@pytest.mark.parametrize("target", [
+    DRIVE_ROOT,
+    DRIVE_ROOT / "Windows",
+    DRIVE_ROOT / "Program Files",
+])
+def test_open_target_keeps_dangerous_locations_blocked(target):
+    """防放松用的对照：最小基线降低了限制，但磁盘根与系统目录仍必须拦下。
+
+    这两条即便「只是打开」也有意义——系统目录里的 `.exe` 双击会直接执行。
+    """
+    assert bk.validate_open_target(target), f"打开目标漏放了危险位置: {target}"
+
+
 def test_open_allows_normal_directory(monkeypatch, tmp_path):
     """配套用例：正常目录不该被这层校验误伤，避免防护过头砸掉功能。"""
     import app as appmod

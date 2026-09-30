@@ -1036,30 +1036,56 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def _target_baseline_check(target: Path, action: str) -> tuple[Path, str]:
+    """「打开」与「恢复写入」共用的位置基线，返回 (resolved, 拒绝原因)。
+
+    只放**两种场景都成立**的规则。系统目录单独拎出来，是因为 Windows 下 explorer
+    指向其中的 `.exe` 会直接执行——这与是否写入无关，打开同样要挡。
+
+    action 用于生成「禁止{action}...」提示语（恢复用「恢复到」、打开用「指向」）。
+    """
+    if not target.is_absolute():
+        return target, f"路径必须是绝对路径: {target}"
+    try:
+        resolved = target.resolve()
+    except OSError as e:
+        return target, f"路径无法解析: {target} ({e})"
+
+    rest = [p.lower() for p in resolved.parts[1:]]
+    if not rest:
+        return resolved, f"禁止{action}磁盘根目录: {resolved}"
+    if rest[0] in _SYSTEM_ROOT_NAMES:
+        return resolved, f"禁止{action}系统目录: {resolved}"
+    return resolved, ""
+
+
+def validate_open_target(target: Path) -> str:
+    """校验 `/api/open` 的打开目标。通过返回 ""，否则返回拒绝原因。
+
+    刻意**只做最小基线**，不含「用户目录根 / AppData 根 / 备份库内部」三条：那三条
+    的唯一理由是「一旦写进去 `_prune_extra` 会删光无关内容」，而打开目录既不写也
+    不删，套上去纯属误伤——备份库本身就是 `/api/open` 白名单里的合法目标
+    （UI 上的「打开备份目录」），用户自己的目录打开也无害。
+
+    仍保留磁盘根与系统目录两条：这些位置里的 `.exe` 双击会直接执行。
+    """
+    return _target_baseline_check(target, "指向")[1]
+
+
 def validate_restore_target(target: Path) -> str:
     """校验 restore 写入目标是否可接受。通过返回 ""，否则返回禁止原因。
-
-    同时被 `/api/open` 复用（app.py::_resolve_open_target）：那里的白名单是由
-    backup_root / save_paths 推导的「自证式」名单，再叠一层本校验才能形成边界。
-    故本函数实为「写入 / 打开类目标」的通用基线，命名沿用其最初的使用场景。
 
     刻意**不做白名单**：用户自己的游戏目录是合法且无法穷举的（可能装在任何盘符、
     任何深度），白名单只会砸掉正常用法。这里反过来只声明「绝不允许落到这些位置」，
     它们的共同点是「该目录下混有大量与本存档无关的内容」——一旦落下去，
     `_prune_extra` 就会递归删掉所有不在备份里的东西。
-    """
-    if not target.is_absolute():
-        return f"存档路径必须是绝对路径: {target}"
-    try:
-        resolved = target.resolve()
-    except OSError as e:
-        return f"存档路径无法解析: {target} ({e})"
 
-    rest = [p.lower() for p in resolved.parts[1:]]
-    if not rest:
-        return f"禁止恢复到磁盘根目录: {resolved}"
-    if rest[0] in _SYSTEM_ROOT_NAMES:
-        return f"禁止恢复到系统目录: {resolved}"
+    注意本函数**不要**用于 `/api/open`：打开不触发写入，用了会连带禁掉「打开备份
+    目录」这类正常功能，应用 `validate_open_target()`。
+    """
+    resolved, reason = _target_baseline_check(target, "恢复到")
+    if reason:
+        return reason
 
     # 用户目录根：桌面/文档/下载都混在这里，prune 会波及整个用户配置区
     home = Path.home().resolve()

@@ -542,9 +542,10 @@ def _resolve_open_target(raw: str):
         target_resolved = target
     if target_resolved in allowed or target in allowed:
         # 白名单本身由 backup_root / save_paths 推导，属「自证式」——它们能被 API
-        # 改写，因此单靠它不成边界。再叠一道独立于配置的基线校验
-        # （同 backup.validate_restore_target，restore 写入与此处同标准）。
-        blocked = bk.validate_restore_target(target_resolved)
+        # 改写，因此单靠它不成边界。再叠一道独立于配置的基线校验。
+        # 这里用 validate_open_target 而非 restore 那一套：打开目录不写入、不触发
+        # _prune_extra，因此备份库自身等 restore 禁止项在这里是合法的。
+        blocked = bk.validate_open_target(target_resolved)
         if blocked:
             return None, blocked
         return target_resolved, None
